@@ -4,54 +4,62 @@
 
 | ID | Name | Type | Size | Dependencies |
 |----|------|------|------|--------------|
-| F0a | High-Speed Execution Core | foundation | large | — |
-| F0b | Centralized Policy Sync Service | foundation | medium | F0a |
-| F1 | Lightning-Fast Incremental Hook | product | medium | F0a |
-| F2 | Immutable Central Guardrail Orchestrator | product | large | F0b, F1 |
-| F3 | High-Performance CI Pipeline Integration加速器 | product | medium | F1, F2 |
-| F4 | Automated Style Auto-Fixer | product | small | F1 |
-| F5 | Security Correction Blueprints | product | small | F3 |
+| F0a | High-Performance AST Parsing Engine | foundation | large | — |
+| F0b | Modular Linting Plugin Architecture | foundation | medium | F0a |
+| F1 | Comprehensive Python Rule Suite | product | large | F0a, F0b |
+| F2 | Rich Visual Terminal UI | product | medium | F1 |
+| F3 | Parallel Execution Runner Logic | product | medium | F0a |
+| F4 | Automated CI/CD Quality Gate | product | small | F1 |
+| F5 | IDE Deep-Linking Integration | product | small | F2 |
 
 ## Milestones
 
-### M0Anchor: Foundation & Policy Core
+### M0: Analytic Foundations
 
-**Goal:** Establish the core engine and policy distribution mechanics.
+**Goal:** Build the core analysis infrastructure and plugin system.
 
 **Exit Criteria:**
-- Execution core benchmarks outperform standard Flake8/Pylint by 5x on large repos.
-- Policy sync successfully retrieves and validates YAML-based rules from a central source.
+- Standard library AST parsing benchamrks met
+- Successful plugin registration and execution of a dummy rule
 
 **Features:** F0a, F0b
 
-### M1Delivery: Developer Velocity & Governance
+### M1: Visual Performance Release
 
-**Goal:** Deliver developer tools and architect governance capabilities.
+**Goal:** Deliver high-performance linting with rich visual feedback.
 
 **Exit Criteria:**
-- Incremental scanning reduces local check time to <1s for small diffs.
-- Security guardrails cannot be overridden by local .flake8 or pyproject.toml files.
-- CI/CD pipeline step reports 100% parity across multiple test repositories.
+- Terminal output displays color-coded error tables and code snippets
+- Support for multiple processes verified on 10k+ LoC repo
 
-**Features:** F1, F2, F3, F4, F5
+**Features:** F1, F2, F3
+
+### M2: Workflow Integration
+
+**Goal:** Integrate with professional developer workflows and CI/CD pipelines.
+
+**Exit Criteria:**
+- Exit codes correctly indicate failure in GitHub Actions or GitLab CI
+- Clickable terminal links open files at specific lines in VS Code/PyCharm
+
+**Features:** F4, F5
 
 ## Dependency Graph
 
 ```mermaid
 graph TD
-  F0a["F0a: High-Speed Execution Core"]
-  F0b["F0b: Centralized Policy Sync Service"]
+  F0a["F0a: High-Performance AST Parsing Engine"]
+  F0b["F0b: Modular Linting Plugin Architecture"]
   F0a --> F0b
-  F1["F1: Lightning-Fast Incremental Hook"]
+  F1["F1: Comprehensive Python Rule Suite"]
   F0a --> F1
-  F2["F2: Immutable Central Guardrail Orchestrator"]
-  F0b --> F2
+  F0b --> F1
+  F2["F2: Rich Visual Terminal UI"]
   F1 --> F2
-  F3["F3: High-Performance CI Pipeline Integration加速器"]
-  F1 --> F3
-  F2 --> F3
-  F4["F4: Automated Style Auto-Fixer"]
+  F3["F3: Parallel Execution Runner Logic"]
+  F0a --> F3
+  F4["F4: Automated CI/CD Quality Gate"]
   F1 --> F4
-  F5["F5: Security Correction Blueprints"]
-  F3 --> F5
+  F5["F5: IDE Deep-Linking Integration"]
+  F2 --> F5
 ```
