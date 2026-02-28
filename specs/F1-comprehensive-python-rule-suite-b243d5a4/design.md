@@ -8,9 +8,9 @@
 
 
 
-The design for the Comprehensive Python Rule Suite adopts a layered architecture strategy that decouples the linting logic (domain) from the execution of external tools (adapters). The core philosophy is to provide a unified interface for disparate check types—PEP 8 stylistics, logical error detection, and security scanning—while presenting them to the user through a prioritized Rich TUI. We will use a 'Composite Rule Provider' pattern to treat built-in checks and external tool bridges uniformly.
+The design for the Comprehensive Python Rule Suite adopts a 'Decoupled Multi-Core' architecture. The core philosophy centers on high-performance parallel execution while maintaining strict domain boundaries between linting logic and reporting. We utilize a Map-Reduce pattern to distribute file-based linting tasks across system cores, ensuring that even massive repositories are scanned efficiently. 
 
-This implementation will not modify the existing file scanning infrastructure but will introduce a new 'Rule Engine' service. The engine acts as a pipeline: it first parses the Python source into an Abstract Syntax Tree (AST) for logical/security analysis, then passes the source through a regex-based style enforcer. This incremental approach allows us to integrate high-performance tools like Ruff and Bandit as adapters under a single domain-driven interface, ensuring Requirement 4's categorization and summarization is consistent regardless of the underlying tool.
+Functionally, the system introduces a new AST-based analysis engine that replaces basic string-matching with structural code evaluation. The reporting layer is completely overhauled to prioritize developer aesthetics, using a Rich TUI to provide immediate, actionable feedback. While the underlying execution engine is new, the configuration format remains backwards compatible with common linter settings (e.g., .flake8 or pyproject.toml) to ensure ease of adoption.
 
 
 
@@ -22,34 +22,37 @@ This implementation will not modify the existing file scanning infrastructure bu
 
 ```mermaid
 graph TD
-    subgraph "Infrastructure Layer"
-        CLI[Rich TUI CLI]
-        FS[FileSystem Adapter]
+    subgraph domain [Domain Layer]
+        Issue[Lint Issue Model]
+        Rule[Rule Interface]
+        Report[Report Summary]
     end
 
-    subgraph "Adapters Layer"
-        Parser[Python AST Parser]
-        Linter[Ruff/Bandit Bridge]
-        Reporter[Rich TUI Formatter]
+    subgraph usecases [Use Case Layer]
+        Engine[Linting Engine]
+        Parallelizer[Task Distributor]
     end
 
-    subgraph "Usecases Layer"
-        RuleEngine[Rule Execution Engine]
-        ReportAggregator[Report Aggregator]
+    subgraph adapters [Adapters Layer]
+        ASTRunner[AST Analysis Adapter]
+        SecurityScanner[Security Logic Adapter]
+        TUIPrinter[Rich TUI Renderer]
     end
 
-    subgraph "Domain Layer"
-        Model[Rule Model]
-        Violation[Violation Entity]
-        Category[Result Categories]
+    subgraph infrastructure [Infrastructure Layer]
+        FileSystem[File System Scanner]
+        WorkerPool[Multiprocessing Pool]
     end
 
-    CLI --> RuleEngine
-    RuleEngine --> Parser
-    RuleEngine --> Linter
-    RuleEngine --> ReportAggregator
-    ReportAggregator --> Reporter
-    Reporter --> CLI
+    FileSystem --> Engine
+    Engine --> Parallelizer
+    Parallelizer --> WorkerPool
+    WorkerPool --> ASTRunner
+    WorkerPool --> SecurityScanner
+    ASTRunner --> Issue
+    SecurityScanner --> Issue
+    Engine --> TUIPrinter
+    TUIPrinter --> Report
 ```
 
 
@@ -60,89 +63,84 @@ graph TD
 
 
 
-### 1. Rule Execution Engine (`usecases`)
+### 1. Linting Engine (`usecases`)
 
 
 
 
-**Path:** `src/usecases/rule_engine.py`
+**Path:** `src/usecases/engine.py`
 
 | Responsibility | Description |
 |---|---|
-| Orchestrating rule execution flow | |
-| Managing file parsing lifecycle | |
-| Aggregating violations from multiple providers | |
+| Orchestrate the linting workflow | |
+| Aggregate findings from multiple rules into a single report | |
+| Manage execution state and high-level error boundaries | |
 
 
 ```python
-class RuleProvider(Protocol):
-    def check(self, tree: ast.AST, source: str) -> List[Violation]:
-        ...
-
-class RuleEngine:
-    def __init__(self, providers: List[RuleProvider]):
-        self.providers = providers
-
-    def execute(self, file_path: Path) -> AnalysisResult:
-        tree = self.parser.parse(file_path)
-        violations = []
-        for p in self.providers:
-            violations.extend(p.check(tree, source))
-        return AnalysisResult(violations)
+class LintEngine:
+    def execute(self, files: List[Path]) -> Report:
+        tasks = self.parallelizer.split(files)
+        raw_results = self.pool.map(self.run_rules, tasks)
+        return self.aggregator.reduce(raw_results)
 ```
 
 
 
 
-### 2. Report Aggregator (`usecases`)
+### 2. Rule Suite Adapters (`adapters`)
 
 
 
 
-**Path:** `src/usecases/report_aggregator.py`
+**Path:** `src/adapters/rules/suite.py`
 
 | Responsibility | Description |
 |---|---|
-| Categorizing violations by severity and type | |
-| Calculating summary statistics for the run | |
-| Formatting data for TUI consumption | |
+| Implement specific PEP 8 check logic | |
+| Perform security vulnerability scanning | |
+| Map raw Python AST nodes to domain Issue objects | |
 
 
 ```python
-class CategorizedReport:
-    categories: Dict[RuleCategory, List[Violation]]
-    summary: SummaryStats
+class IRule(Protocol):
+    def check(self, code: str) -> List[Issue]: ...
 
-    def add_violation(self, v: Violation):
-        self.categories[v.category].append(v)
+class PEP8StyleRule(IRule):
+    def check(self, code: str) -> List[Issue]:
+        # AST traversal implementation
+        pass
+
+class SecurityRule(IRule):
+    def check(self, code: str) -> List[Issue]:
+        # Vulnerability scanning logic
+        pass
 ```
 
 
 
 
-### 3. External Linter Bridge (`adapters`)
+### 3. Rich TUI Reporter (`adapters`)
 
 
 
 
-**Path:** `src/adapters/linter_bridge.py`
+**Path:** `src/adapters/ui/tui.py`
 
 | Responsibility | Description |
 |---|---|
-| Translating external tool output to internal models | |
-| Executing subprocess calls for security scanning | |
-| Mapping error codes to priority levels | |
+| Render color-coded summary tables | |
+| Format issues for terminal readability | |
+| Calculate and display repository health metrics | |
 
 
 ```python
-class BanditAdapter(RuleProvider):
-    def check(self, tree: ast.AST, source: str) -> List[Violation]:
-        results = self._run_bandit_binary(source)
-        return [Violation(
-            category=RuleCategory.SECURITY,
-            code=r.code,
-            message=r.text
-        ) for r in results]
+class RichReporter:
+    def render(self, report: Report) -> None:
+        table = Table(title="Repository Health Summary")
+        for issue in report.issues:
+            table.add_row(issue.code, issue.msg, style=issue.severity_style)
+        console.print(table)
 ```
 
 
@@ -168,36 +166,36 @@ No new data models are introduced unless specified in the component descriptions
 
 
 
-### Property F1-P1: Severity Prioritization Invariant
+### Property F1-P1: Aggregation Integrity
 
 
 
 
-*For any violation identified as a 'Security' or 'Logical' risk, its priority in the Rich TUI must be higher than any 'Style' violation.*
+*For any execution of the Linting Engine, the total count of issues in the final Report must equal the sum of issues found by individual Rule Adapters across all parallel workers.*
 
-**Validates: Requirements 4.0**
-
-
-
-### Property F1-P2: Security Detection Coverage
+**Validates: Requirements 4**
 
 
 
-
-*For any input Python source code containing common injection patterns (e.g., eval(), subprocess.shell=True), the Security scan must produce at least one Violation with Category.SECURITY.*
-
-**Validates: Requirements 3.0**
-
-
-
-### Property F1-P3: PEP 8 Compliance Enforcement
+### Property F1-P2: Rule Compliance Coverage
 
 
 
 
-*For any source file lacking trailing newlines or having incorrect indentation, a PEP 8 Style Violation must be emitted.*
+*For any codebase containing a PEP 8 violation (e.g., E302 expected 2 blank lines), the PEP8StyleRule must return at least one Issue object with a SEVERITY_STYLE level.*
 
-**Validates: Requirements 1.0**
+**Validates: Requirements 1**
+
+
+
+### Property F1-P3: Incremental Efficiency
+
+
+
+
+*For any file that has not been modified since the last successful scan, the Parallelizer must skip re-processing when incremental mode is enabled.*
+
+**Validates: Requirements 4**
 
 
 
@@ -208,9 +206,9 @@ No new data models are introduced unless specified in the component descriptions
 
 | Scenario | Handling |
 |---|---|
-| Python file contains invalid syntax preventing AST generation | Fallback to basic syntax checking; report 'Logical Error' category for unparsable files. |
-| External security tool (Bandit) is missing from the environment | Gracefully catch Exception, emit a 'Bridge Failure' warning in the TUI, and continue with style checks. |
-| Source file uses incompatible encoding | Catch UnicodeDecodeError and report as a 'File Access' error category. |
+| Malformed Python file causing AST parser crash | The individual file task is logged as 'failed' in the report, but the engine continues processing other files to ensure the full suite completes. |
+| User terminates process during parallel execution | The system catches the signal and performs a graceful shutdown of the WorkerPool, clearing any temporary buffers before exit. |
+| Terminal does not support ANSI/Rich formatting | The system defaults to a standard non-colored plaintext output for compatibility. |
 
 
 
@@ -219,6 +217,6 @@ No new data models are introduced unless specified in the component descriptions
 
 
 
-The testing strategy employs a multi-tiered approach. Regression testing will utilize the existing 'pytest' suite to ensure that introducing the new Rule Engine does not break file ingestion or CLI command parsing. CI verification will be handled via GitHub Actions, running 'pytest --cov' to ensure 90%+ coverage on usecase logic.
+The testing strategy employs a tiered approach. Regression testing is handled by running the new suite against a curated set of 'Golden Files'—known Python samples with documented PEP 8 and security issues—to ensure parity with existing tools. Continuous Integration (CI) will verify performance via a 'Large Repo Stress Test' executed on every pull request.
 
-For Requirement-specific validation, we will introduce Property-Based Testing using the 'Hypothesis' library. We will generate Python ASTs and source strings with specific 'tainted' patterns (e.g., missing docstrings or dangerous eval() calls) and assert that the Rule Engine consistently categorizes these as STYLE and SECURITY respectively. These tests will be tagged '@property_test' and configured to run 100 iterations per scenario. We will also perform 'Gold Master' testing for the Rich TUI by capturing terminal output snapshots to confirm that categorization and color-coding remain visually consistent across updates.
+New Property-Based Tests (using Hypothesis) will be implemented to generate arbitrary (but syntactically valid) Python code to ensure the AST adapters do not crash under edge cases. Testing configuration will use 'pytest-xdist' for parallel test execution, and the property-based tests will be configured for 200 iterations per rule to satisfy the aggregation integrity invariants. Terminal output will be verified using the 'Console' capture features of the Rich library to ensure formatting consistency.

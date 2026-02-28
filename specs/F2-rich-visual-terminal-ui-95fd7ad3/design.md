@@ -8,9 +8,11 @@
 
 
 
-The Rich Visual Terminal UI (F2) feature adopts an 'Aesthetics-First' strategy, utilizing the 'Rich' Python library to transform flat text logs into a structured, high-fidelity diagnostic dashboard. The design philosophy focuses on 'Information Density with Clarity'—maximizing the data displayed (code context, health tables, severity distribution) while minimizing cognitive load through consistent color-coding and spatial separation. 
+The Rich Visual Terminal UI (F2) is designed to transform the linter from a standard CLI tool into a high-fidelity diagnostic dashboard. The core strategy leverages the 'Rich' library to create a structured, aesthetic output that balances the needs of individual developers (code context) and DevOps engineers (summary stats). We are moving from single-line string outputs to a multi-stage rendering pipeline that constructs the report as a tree of visual components.
 
-The implementation follows an incremental adapter approach: the core linting engine remains untouched, while a new 'TUIAdapter' is introduced to intercept the final 'LintResult' domain object. We shift from a line-by-line printing model to a layout-based model where the terminal screen is treated as a set of logical zones. This ensures that the Health Table (Requirement 3) always appears as a consolidated summary, while Inline Fragments (Requirement 2) provide deep-dive diagnostics.
+The implementation follows a non-destructive incremental approach: the existing data collection logic remains untouched, while a new 'RichEmitter' class is introduced in the adapters layer to replace the legacy stdout print statements. This separation ensures that the core linting engine remains decoupled from the presentation logic, allowing for alternate output formats (like JSON or HTML) in the future without modification to the domain.
+
+The design philosophy prioritizes clarity and context. Instead of just stating an error, the TUI will 'show' the error through syntax-highlighted blocks. The health summary is positioned at the end of the output to serve as the definitive status check for CI/CD environments, ensuring that the most critical 'pass/fail' information is the last thing a user or script sees.
 
 
 
@@ -22,35 +24,35 @@ The implementation follows an incremental adapter approach: the core linting eng
 
 ```mermaid
 graph TD
-    subgraph "Adapters Layer"
-        TUI[Terminal UI Adapter]
-        RT[Rich Renderer]
-        SH[Syntax Highlighter]
+    subgraph UseCases [Use Cases]
+        LinterRunner[Linter Runner]
+        ReportGenerator[Report Generator]
     end
 
-    subgraph "Use Cases Layer"
-        Reporter[Report Generator]
-        CodeLoader[Source Context Loader]
+    subgraph Adapters [Adapters / UI]
+        RichEmitter[Rich Report Emitter]
+        TableBuilder[Summary Table Builder]
+        SyntaxPrettifier[Syntax Highlighter]
     end
 
-    subgraph "Domain Layer"
-        Stats[Health Statistics]
-        Frame[Visual Frame]
-        Theme[Aesthetic Config]
+    subgraph Domain [Domain Models]
+        LintResult[Lint Result Model]
+        StyleConfig[UI Style Config]
     end
 
-    subgraph "Infrastructure Layer"
-        Console[Console I/O]
-        FS[File System Access]
+    subgraph Infrastructure [Infrastructure]
+        RichConsole[Rich Console Library]
+        TerminalIO[Terminal stdout/stderr]
     end
 
-    Reporter --> TUI
-    TUI --> RT
-    RT --> SH
-    SH --> CodeLoader
-    CodeLoader --> FS
-    TUI --> Console
-    Reporter --> Stats
+    LinterRunner --> ReportGenerator
+    ReportGenerator --> RichEmitter
+    RichEmitter --> TableBuilder
+    RichEmitter --> SyntaxPrettifier
+    RichEmitter --> RichConsole
+    TableBuilder --> LintResult
+    SyntaxPrettifier --> LintResult
+    RichConsole --> TerminalIO
 ```
 
 
@@ -61,28 +63,31 @@ graph TD
 
 
 
-### 1. Terminal UI Adapter (`adapters`)
+### 1. Rich Report Emitter (`adapters`)
 
 
 
 
-**Path:** `src/adapters/tui_adapter.py`
+**Path:** `src/adapters/ui/rich_emitter.py`
 
 | Responsibility | Description |
 |---|---|
-| Orchestrate the visual layout of the report | |
-| Map domain linting models to Rich renderables | |
-| Manage terminal console state and color depth | |
+| Orchestrate the visual layout of the linter report | |
+| Determine terminal capabilities for color support | |
+| Combine syntax blocks and summary tables into a single output stream | |
 
 
 ```python
-class TerminalUIAdapter(UIProvider):
-    def render_report(self, results: LintResults, stats: RepositoryStats):
-        layout = self._build_layout()
-        layout["header"].update(self._header())
-        layout["summary"].update(self._health_table(stats))
-        layout["body"].update(self._issue_list(results))
-        self.console.print(layout)
+class RichEmitter:
+    def __init__(self, console: Console, theme: Dict[str, str]):
+        self.console = console
+        self.theme = theme
+
+    def emit_report(self, results: List[LintResult]) -> None:
+        # 1. Header with metadata
+        # 2. Results list with Syntax blocks
+        # 3. Summary Footer with Health Table
+        pass
 ```
 
 
@@ -93,49 +98,56 @@ class TerminalUIAdapter(UIProvider):
 
 
 
-**Path:** `src/adapters/syntax_highlighter.py`
+**Path:** `src/adapters/ui/syntax_prettifier.py`
 
 | Responsibility | Description |
 |---|---|
-| Load source code snippets dynamically | |
-| Apply language-aware syntax highlighting | |
-| Generate visual column pointers for errors | |
+| Extract code snippets from source files based on error coordinates | |
+| Apply syntax-aware coloring based on file extensions | |
+| Format code panels with line numbers and focus highlights | |
 
 
 ```python
-class SyntaxHighlighter:
-    def highlight_fragment(self, file_path: str, line_no: int, col_no: int) -> Group:
-        lines = self.loader.get_context(file_path, line_no)
-        syntax = Syntax("\n".join(lines), self._map_ext(file_path), theme="monokai", line_numbers=True, start_line=line_no-2)
-        return Panel(syntax, title=f"{file_path}:{line_no}")
+class SyntaxPrettifier:
+    def get_highlighted_block(self, 
+                               file_path: str, 
+                               line_no: int, 
+                               highlight_line: bool = True) -> Panel:
+        syntax = Syntax.from_path(
+            file_path, 
+            line_numbers=True, 
+            theme="monokai",
+            highlight_lines={line_no}
+        )
+        return Panel(syntax, title=file_path)
 ```
 
 
 
 
-### 3. Repository Health Aggregator (`domain`)
+### 3. Summary Table Builder (`adapters`)
 
 
 
 
-**Path:** `src/domain/health_aggregator.py`
+**Path:** `src/adapters/ui/table_builder.py`
 
 | Responsibility | Description |
 |---|---|
-| Aggregate linting errors by type and severity | |
-| Calculate repository health metrics | |
-| Provide data structures for table rendering | |
+| Aggregate lint results into statistical categories | |
+| Generate a formatted Rich Table object for summary display | |
+| Apply conditional styling based on error thresholds (e.g., red if > 0 errors) | |
 
 
 ```python
-@dataclass(frozen=True)
-class RepositoryStats:
-    total_files: int
-    issue_counts: Dict[Severity, int]
-    health_score: float
-
-    def get_summary_row(self) -> List[str]:
-        return [str(self.total_files), str(self.issue_counts[Severity.ERROR])]
+class TableBuilder:
+    def build_summary_table(self, summary_data: Dict[str, int]) -> Table:
+        table = Table(title="Repository Health Summary")
+        table.add_column("Category", style="cyan")
+        table.add_column("Count", justify="right", style="magenta")
+        for cat, count in summary_data.items():
+            table.add_row(cat, str(count))
+        return table
 ```
 
 
@@ -161,36 +173,36 @@ No new data models are introduced unless specified in the component descriptions
 
 
 
-### Property F2-P1: Statistical Integrity
+### Property F2-P1: Completeness of Summary Aggregation
 
 
 
 
-*For any LintResult set, the sum of errors in the Categorized Health Table must exactly equal the total count of issues in the domain model.*
+*For any execution run, the output must generate a summary table containing a count of all identified LintResult objects grouped by their severity level.*
 
-**Validates: Requirements 3.1**
-
-
-
-### Property F2-P2: Visual Context Accuracy
+**Validates: Requirements 3.1, 4.1**
 
 
 
-
-*For any SyntaxHighlightedFragment, the line number indicated in the visual UI must match the actual source file line number where the violation exists.*
-
-**Validates: Requirements 2.1**
-
-
-
-### Property F2-P3: Layout Resilience
+### Property F2-P2: Snippet Fidelity
 
 
 
 
-*For any terminal output, all visual components (Table, Panel, Syntax) must render without character corruption regardless of terminal width (down to 80 chars).*
+*For any code snippet displayed in the TUI, the content must be identical to the source file lines at the reported coordinates [line_start, line_end].*
 
-**Validates: Requirements 1.1**
+**Validates: Requirements 2.1, 2.2**
+
+
+
+### Property F2-P3: CI Transparency
+
+
+
+
+*For any environment where the terminal is detected as a non-interactive pipe (CI context), the output must maintain a valid return code and a clean stream regardless of color capabilities.*
+
+**Validates: Requirements 4.1, 4.2**
 
 
 
@@ -201,8 +213,9 @@ No new data models are introduced unless specified in the component descriptions
 
 | Scenario | Handling |
 |---|---|
-| Source code file is deleted or inaccessible during report generation. | The UI falls back to displaying the FilePath and ErrorMessage without the code block if I/O fails. |
-| Output is redirected to a non-TTY pipe or a terminal without 256-color support. | The TUI automatically disables all ANSI color codes and shifts to a basic Markdown-style layout. |
+| Source file renamed or deleted between linting and reporting phase. | The SyntaxPrettifier catches FileNotFoundError and returns a placeholder text panel 'Source unavailable'. |
+| Terminal window is too narrow for the summary table. | Rich library automatically detects terminal width; the emitter uses 'expand=True' and 'soft_wrap=True' to prevent layout break. |
+| TUI is executed in a terminal that does not support ANSI colors or Unicode. | The system forces NO_COLOR=1 and uses standard ASCII characters for the health table. |
 
 
 
@@ -211,8 +224,12 @@ No new data models are introduced unless specified in the component descriptions
 
 
 
-The testing strategy utilizes a combination of visual regression tests and property-based verification. Regression testing will use 'Rich's' Console logging capture to compare snapshots of TUI output against known-good 'golden' files, ensuring no layout shifts occur during refactoring. CI verification will run 'pytest' with color-cycling to ensure no exceptions are raised during string formatting across different terminal emulations.
+The testing strategy centers on 'Snapshot Testing' and 'Property-Based UI Verification'. 
 
-New property-based tests using Hypothesis will generate randomized linting results (variable severities, long file paths, and multi-byte characters) to verify that the 'Repository Health Table' always calculates sums correctly and the 'SyntaxHighter' handles edge cases like empty files or single-character lines. Character encoding will be specifically tested using UTF-8 and ASCII-only environments to ensure the TUI remains readable in restricted shells.
+**Regression Testing:** We will maintain existing logic tests for linter accuracy, but we will wrap the terminal output in a 'Console.capture()' block to verify that the visual transformation does not omit any raw data points from the previous version. 
 
-Configuration for tests will target 100 iterations per property test, tagged with '@tui-suite', using the 'pytest-rich' plugin to verify the visual components themselves produce valid renderables.
+**CI Verification:** The CI pipeline will run the linter with 'FORCE_COLOR=0' and 'TERM=dumb' to ensure that the TUI logic gracefully degrades and doesn't crash in environments without complex terminal drivers. We will use the command 'pytest tests/ui --snapshot-update' to compare current output against gold-standard terminal renders.
+
+**New Property-Based Tests:** Using the 'Hypothesis' library, we will generate arbitrary 'LintResult' lists (extreme counts, very long file paths, invalid UTF-8 characters) to ensure the UI components (TableBuilder, SyntaxPrettifier) never raise an exception, regardless of the input data.
+
+**Configuration:** Testing will utilize 'rich.console.Console' with 'width=80' and 'width=120' forced configurations to test layout responsiveness. Snapshots will be stored in '.svg' or '.txt' format in the 'tests/snapshots' directory.

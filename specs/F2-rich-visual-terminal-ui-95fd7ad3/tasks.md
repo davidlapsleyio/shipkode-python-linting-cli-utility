@@ -8,9 +8,9 @@
 
 
 
-The implementation strategy follows a domain-first approach, starting with the health aggregation logic to ensure statistical accuracy before any visual work begins. By building the 'Repository Health Aggregator' first, we establish a single source of truth for the data displayed in the UI.
+The implementation strategy follows a domain-to-adapter flow, starting with the refinement of data models to support rich metadata, followed by the development of discrete UI components using the Rich library. We will first build the granular adapters for syntax highlighting and table construction before integrating them into a master Emitter class. This ensures that the complex visual logic is unit-testable in isolation.
 
-The second phase focuses on atomic UI components: the syntax highlighter for code snippets and the data-table formatting. Once these components are verified against correctness properties (accuracy and resilience), the final phase integrates them into a cohesive Terminal UI Adapter. This incremental approach allows us to test reporting logic in isolation from terminal-specific rendering issues.
+The rationale for this order is to establish the 'Snippet Fidelity' and 'Completeness of Summary Aggregation' properties at the component level before shipping the final integrated UI. Later phases focus on CI/CD environment detection to satisfy the 'CI Transparency' property, ensuring the tool degrades gracefully in non-interactive shells.
 
 
 
@@ -20,94 +20,97 @@ The second phase focuses on atomic UI components: the syntax highlighter for cod
 
 
 
-- [ ] F2-T1. Domain Logic & Health Aggregation
+- [ ] F2-T1. Domain Model Refinement
 
-- [ ] F2-T1.1 Implement Health Aggregator and Data Models
+- [ ] F2-T1.1 Enhance Domain Models for UI Metadata
 
-- Create src/domain/health_aggregator.py.
+- Update `LintResult` in `src/domain/models.py` to include `context_lines` or raw source snippets if not already present.
 
-- Implement HealthSummary dataclass to hold categorized counts.
+- Define a `Severity` Enum (Error, Warning, Info) to facilitate grouping.
 
-- Implement HealthAggregator class with aggregate_results(results: List[LintResult]) method.
+- Verification: Ensure domain objects can be instantiated with file coordinates.
 
-- Logic must group violations by severity and rule type.
-
-- _Requirements: R3_
-
-
-- [ ] F2-T1.2 Verify Statistical Integrity Property
-
-- Create tests/domain/test_health_aggregator.py.
-
-- Write unit tests verifying that the sum of categorized errors matches the input list size.
-
-- Ensure edge cases (empty results, multiple severities) are handled.
-
-- _Requirements: R3_
+- _Requirements: F2.1_
 
 
 
-- [ ] F2-T2. Visual Component Development
+- [ ] F2-T2. Component Adapter Development
 
-- [ ] F2-T2.1 Build Syntax Highlighting Adapter
+- [ ] F2-T2.1 Implement Syntax Highlighter Adapter
 
-- Create src/adapters/syntax_highlighter.py.
+- Create `src/adapters/ui/syntax_prettifier.py`.
 
-- Implement SyntaxHighlighter class using Rich's 'Syntax' and 'Panel' objects.
+- Implement `SyntaxHighlighter` class using `rich.syntax.Syntax`.
 
-- Method highlight_snippet(path, line_no, context) must locate and highlight the specific violation line.
+- Logic: Read file at `[line_start, line_end]`, apply language-specific lexing.
 
-- Ensure line padding and line number gutter are rendered.
+- Verification: Property test 'Snippet Fidelity' by comparing rendered text against source file content.
 
-- _Requirements: R2_
-
-
-- [ ] F2-T2.2 Property Test: Visual Context and Resilience
-
-- Create test scripts to render snippets at various terminal widths (80, 100, 120).
-
-- Verify that line numbers in the Rich Panel match the underlying source file indexes exactly.
-
-- _Requirements: R2_
+- _Requirements: F2.2_
 
 
+- [ ] F2-T2.2 Implement Summary Table Builder
 
-- [ ] F2-T3. TUI Integration and Layout Validation
+- Create `src/adapters/ui/table_builder.py`.
 
-- [ ] F2-T3.1 Implement TUI Adapter & Layout
+- Implement `SummaryTableBuilder` class using `rich.table.Table`.
 
-- Create src/adapters/tui_adapter.py.
+- Logic: Group a list of `LintResult` objects by severity and calculate totals.
 
-- Implement RichTUIAdapter class using Rich.console.Console.
+- Verification: Property test 'Completeness of Summary Aggregation' with a mock list of results.
 
-- Create render_report(results: List[LintResult]) method to coordinate the Health Table and Syntax Panels.
-
-- Use Rich 'Table' for the Health Summary with color-coded severity levels (Red for Error, Yellow for Warning).
-
-- _Requirements: R1/R3_
-
-
-- [ ] F2-T3.2 Property Test: Layout Resilience (80 chars)
-
-- Implement property-based tests using 'Console(width=80)' to ensure no character corruption or layout breaking occurs in restricted environments.
-
-- Verify color contrast ratios for accessibility [E10].
-
-- _Requirements: R1_
+- _Requirements: F2.3_
 
 
 
-- [ ] F2-T4. Checkpoint: Integrated Verification
+- [ ] F2-T3. Checkpoint 1: Component Validation
 
-- [ ] F2-T4.1 End-to-End Visual Checkpoint
+- [ ] F2-T3.1 Checkpoint: Component Validation
 
-- Execute a full linting run on a known codebase.
+- Execute pytest suite for `syntax_prettifier` and `table_builder`.
 
-- Manually verify that the 'Categorized Health Table' counts match the 'Syntax Fragments' displayed.
+- Verify that 100% of lint results are accounted for in the table mock tests.
 
-- Check that the UI remains responsive and readable in different terminal emulators (e.g., iTerm2, VS Code Terminal).
 
-- _Requirements: R1/R2/R3_
+
+- [ ] F2-T4. Integration and CI/CD Readiness
+
+- [ ] F2-T4.1 Construct Rich Report Emitter
+
+- Create `src/adapters/ui/rich_emitter.py`.
+
+- Implement `RichReportEmitter` class.
+
+- Compose `SyntaxHighlighter` and `SummaryTableBuilder` into a single `render_report(results)` method using `rich.console.Console`.
+
+- Use `rich.panel.Panel` for individual error cards.
+
+- _Requirements: F2.1, F2.2_
+
+
+- [ ] F2-T4.2 Implement CI/CD Compatibility & Environment Detection
+
+- Implement environment detection logic in `RichReportEmitter.get_console()`.
+
+- Use `rich.console.Console(force_terminal=False)` to detect pipes.
+
+- Ensure return codes are propagated correctly from the application layer to the OS.
+
+- Verification: Run in a piped environment (e.g., `linter | cat`) to ensure no crashes and clean output.
+
+- _Requirements: F2.4_
+
+
+
+- [ ] F2-T5. Checkpoint 2: Final Verification
+
+- [ ] F2-T5.1 Final Property Alignment & QA
+
+- Perform a manual visual check of the report layout (Requirements E9, E12, E15).
+
+- Execute property test 'CI Transparency' by simulating `TERM=dumb` and piped STDOUT.
+
+- Ensure zero linting violations in the new adapter modules.
 
 
 
@@ -117,13 +120,11 @@ The second phase focuses on atomic UI components: the syntax highlighter for cod
 
 
 
-- Optional tasks are marked with (*).
+- Tasks marked with (*) are optional aesthetic enhancements like custom themes.
 
-- Requirement traceability (e.g., R1, R2) ensures every feature goal is mapped to a specific engineering action.
+- Traceability is maintained via requirement_refs to ensure every UI element map back to user needs.
 
-- Property references (e.g., P1, P2) ensure that validation logic is built into the development lifecycle.
+- Ordering constraint: The `syntax_prettifier` must be implemented before the `rich_emitter` to allow integration of code snippets into the final report layout.
 
-- Backward compatibility: The TUI adapter will coexist with existing CLI outputters via a common interface, ensuring no breaking changes for CI/CD environments preferring raw logs.
-
-- Ordering Constraints: Highlighting components (2.2) must be completed before the main TUI adapter (3.1) to allow for integrated visual testing.
+- Backward compatibility: The existing CLI output (plain text) must remain the default unless the --rich flag is passed.
 

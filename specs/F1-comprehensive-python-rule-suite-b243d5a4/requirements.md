@@ -8,7 +8,7 @@
 
 
 
-The Comprehensive Python Rule Suite (F1) is the foundational engine of Hyper-Lint, designed to enforce high standards of code quality, security, and maintainability across Python projects. Currently, many development teams struggle with fragmented tools that separate style checking from security auditing, leading to inconsistent environments and overlooked vulnerabilities [E3][E6]. This feature integrates PEP 8 style enforcement, logical error detection, and security vulnerability scanning into a single, high-performance static analysis tool. By automating these checks within both local terminal environments and CI/CD pipelines [E4][E7], Hyper-Lint provides an immediate quality gate that prevents insecure or poorly formatted code from entering production, ultimately reducing technical debt and improving developer productivity through clear, actionable feedback.
+The Comprehensive Python Rule Suite (F1) is the core engine of Hyper-Lint, designed to provide high-fidelity static analysis for Python development environments. Current development workflows often suffer from fragmented tools that lead to dense, unformatted logs and missed security risks. This feature consolidates PEP 8 style checking, logical error detection, and security vulnerability scanning into a single, high-performance execution layer. By integrating these checks with a Rich Terminal User Interface, Hyper-Lint ensures that developers can identify and fix issues instantly, while DevOps engineers can enforce standardized quality gates across large-scale CI/CD pipelines. This suite transforms raw code analysis into actionable, visually indexed reports that maintain repo health and security at scale.
 
 
 
@@ -18,35 +18,12 @@ The Comprehensive Python Rule Suite (F1) is the foundational engine of Hyper-Lin
 
 
 
-### Requirement 1: PEP 8 Style Compliance Enforcement
+### Requirement 1: Enforce PEP 8 Style Governance
 
 
 
 
-**User Story:** As an Aesthetics-Driven Developer, I want the linter to verify my code against PEP 8 standards [E3], so that I can maintain a clean and professional codebase that is easy for my team to read [E1].
-
-
-
-
-#### Acceptance Criteria
-
-
-
-
-1. WHEN the system scans a Python file, THE system SHALL verify compliance with PEP 8 standards including indentation, naming conventions, and line length [E3][E6].
-
-2. IF a style violation is detected, THEN THE system SHALL categorize the finding as a 'Style' error type [E15].
-
-3. WHEN a violation is identified, THE system SHALL provide visual highlighting of the specific code line where the error occurs [E16].
-
-
-
-### Requirement 2: Logical Error and Syntax Detection
-
-
-
-
-**User Story:** As a DevOps/Platform Engineer, I want the system to detect logical code errors [E6], so that we can prevent runtime failures before they reach the production environment [E7].
+**User Story:** As an Aesthetics-Driven Developer, I want a linter that works on my Python code [E1] and checks for PEP 8 compliance [E3][E6], so that I can maintain high code readability and professional standards.
 
 
 
@@ -56,43 +33,20 @@ The Comprehensive Python Rule Suite (F1) is the foundational engine of Hyper-Lin
 
 
 
-1. WHEN the system performs static analysis, THE system SHALL identify logical errors such as unreachable code, undefined variables, and shadowing [E3][E6].
+1. WHEN the system performs a style check, THE system SHALL verify compliance against PEP 8 standards [E3][E6].
 
-2. IF a logical inconsistency is found, THEN THE system SHALL categorize the finding as a 'Syntax' error type in the summary [E15].
+2. IF the system identifies a violation, THEN the system SHALL output a color-coded diagnostic message [E14][E18].
 
-3. WHEN logical errors are detected, THE system SHALL display the exact line of code in the Rich TUI to facilitate immediate fixing [E10][E16].
-
-
-
-### Requirement 3: Security Vulnerability Scanning
+3. THE system SHALL include the specific line number and a snippet of the violating code with syntax highlighting [E16][E20].
 
 
 
-
-**User Story:** As a DevOps/Platform Engineer, I want the linter to perform security vulnerability detection [E3][E6], so that I can maintain organizational security standards and prevent critical risks like code injection [E7].
+### Requirement 2: Logical and Security Vulnerability Detection
 
 
 
 
-#### Acceptance Criteria
-
-
-
-
-1. WHEN the system scans Python source code, THE system SHALL detect insecure patterns including the use of eval(), exec(), and insecure module imports [E3].
-
-2. IF a security vulnerability is identified, THEN THE system SHALL categorize the finding as a 'Security' error type [E15].
-
-3. WHEN running in a CI/CD pipeline, THE system SHALL treat detected Security errors as a failure condition for the quality gate [E7].
-
-
-
-### Requirement 4: Categorized Reporting and Summarization
-
-
-
-
-**User Story:** As an Aesthetics-Driven Developer, I want a nicely formatted Rich TUI report that categorizes errors [E9][E15], so that I can quickly prioritize fixing critical security and logic issues over style nits [E10][E14].
+**User Story:** As a DevOps/Platform Engineer, I want the system to scan for logical errors and security vulnerabilities [E3][E6], so that I can prevent insecure or messy code from reaching production via automated quality gates [E4][E7].
 
 
 
@@ -102,11 +56,57 @@ The Comprehensive Python Rule Suite (F1) is the foundational engine of Hyper-Lin
 
 
 
-1. WHEN the scan is complete, THE system SHALL generate a static, non-interactive report using color-coded formatting [E12][E14].
+1. WHEN scanning a Python file, THE system SHALL detect common logical errors and basic security vulnerabilities such as eval() usage and insecure imports [E3][E6].
 
-2. THE system SHALL include a summary table that aggregates error counts specifically for Security, Style, and Syntax categories [E15].
+2. IF a security vulnerability is detected, THEN the system SHALL categorize the error as 'Security' in the final report [E15].
 
-3. IF the terminal environment supports it, THEN THE system SHALL use a Rich TUI to display the report with high-fidelity visual hierarchy [E9][E10].
+3. THE system SHALL provide specific diagnostic warnings for identified logical flaws to prevent runtime failures [E18][E20].
+
+
+
+### Requirement 3: Rich Terminal Summary Reporting
+
+
+
+
+**User Story:** As an Aesthetics-Driven Developer, I want a rich TUI nicely formatted [E9] with color-coded reports [E14], so that I can quickly understand the Health of my repository through a detailed summary table [E15].
+
+
+
+
+#### Acceptance Criteria
+
+
+
+
+1. WHEN the linting process completes, THE system SHALL generate a static, non-interactive report [E11][E12].
+
+2. THE system SHALL display a summary table categorizing error counts by type: Security, Style, and Syntax [E15].
+
+3. THE system SHALL use a Rich Terminal User Interface to provide color-coded reports for better readability [E9][E10][E14].
+
+
+
+### Requirement 4: High-Performance Parallel Execution
+
+
+
+
+**User Story:** As a DevOps/Platform Engineer, I want the utility to support incremental linting and parallel processing [E8], so that I can ensure high performance on large codebases within CI/CD pipelines [E4][E7].
+
+
+
+
+#### Acceptance Criteria
+
+
+
+
+1. WHEN executed on large codebases, THE system SHALL support parallel processing to utilize multi-core environments [E8].
+
+2. THE system SHALL support incremental linting to only process changed files, reducing execution time [E8].
+
+3. IF executed within a CI/CD pipeline, THEN the system SHALL return a non-zero exit code upon detecting critical failures to serve as a quality gate [E4][E7].
 
 
 

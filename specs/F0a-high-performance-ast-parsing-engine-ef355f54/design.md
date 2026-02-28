@@ -8,11 +8,9 @@
 
 
 
-The High-Performance AST Parsing Engine (F0a) is designed with a 'Scan-Once, Check-Many' philosophy. The strategy centers on maximizing CPU utilization through a multi-process worker pool that executes a single-pass AST traversal for every file. By implementing the Visitor pattern in the Rule Engine, we decouple the multidimensional analysis (PEP8, logic, security) from the parsing logic, allowing diverse checks to run simultaneously against the same AST in-memory structure. 
+The F0a engine design adopts a 'Speed-First, Fidelity-Always' philosophy. The strategy is to decouple the heavy AST parsing and rule evaluation from the user interface using a parallelised worker pool. Central to this approach is the 'Incremental Manifest'—a local database that tracks file hashes to ensure that we only parse what has changed. This allows the tool to maintain sub-second response times even as the project grows to thousands of files.
 
-The design introduces a sophisticated incremental processing layer that utilizes SHA-256 file hashing. This ensures that in a CI/CD environment, only files that have actually changed are re-parsed, while results for unchanged files are served from a persistent local cache. This approach minimizes Developer Idle Time even as the codebase grows. The existing CLI interface remains the entry point, but the underlying execution moves from sequential processing to an asynchronous, parallel-worker architecture.
-
-Significant changes occur in the 'adapters' and 'usecases' layers to accommodate native Python `ast` interactions and the new Orchestrator. The domain models are refined to include precise byte-offset metadata for IDE-like highlighting in the terminal. No changes are required for existing output formatters, which will continue to consume the aggregated analysis reports.
+Architecturally, we are moving from a single-threaded sequential linter to a multi-process architecture. While we keep the core Python `ast` module (or a high-fidelity wrapper like `libcst`), we wrap it in a custom visitor logic that captures exact byte-offsets for UI highlighting. The infrastructure is designed to be 'stateless' regarding the code, relying entirely on the local file system and a lightweight sidecar cache database.
 
 
 
@@ -25,33 +23,34 @@ Significant changes occur in the 'adapters' and 'usecases' layers to accommodate
 ```mermaid
 graph TD
     subgraph "Adapters Layer"
-        FS[File System Adapter] --> W[Parser Worker Pool]
-        W --> AST[Native AST Parser]
-    end
-
-    subgraph "Domain Layer"
-        M[Analysis Models]
-        P[Analysis Protocols]
-    end
-
-    subgraph "Use Cases Layer"
-        O[Orchestrator]
-        R[Rule Engine]
-        C[Cache Manager]
+        FS[File System Adapter] --> W[Workspace Scanner]
+        LC[LLM Client]
     end
 
     subgraph "Infrastructure Layer"
-        API[CLI/API Entry]
-        DB[SQLite/Memory Cache]
+        CLI[Terminal UI] --> Orchestrator
+        Cache[SQLite/Disk Cache]
     end
 
-    API --> O
-    O --> C
-    O --> FS
-    O --> R
-    R --> P
-    C --> DB
-    FS --> M
+    subgraph "Usecases Layer"
+        Orchestrator[Parallel Orchestrator]
+        Worker[Parsing Worker]
+        Incremental[Incremental Logic]
+    end
+
+    subgraph "Domain Layer"
+        AST[AST Models]
+        Diagnostic[Diagnostic Report]
+        Registry[Rule Registry]
+    end
+
+    W --> Orchestrator
+    Orchestrator --> Worker
+    Worker --> Registry
+    Worker --> AST
+    Orchestrator --> Cache
+    Orchestrator --> Diagnostic
+    Diagnostic --> CLI
 ```
 
 
@@ -62,7 +61,7 @@ graph TD
 
 
 
-### 1. Parallel Analysis Orchestrator (`usecases`)
+### 1. Parallel Orchestrator (`usecases`)
 
 
 
@@ -71,106 +70,113 @@ graph TD
 
 | Responsibility | Description |
 |---|---|
-| Manage multiprocess worker pool for CPU-bound AST parsing | |
-| Coordinate between CacheManager and RuleEngine | |
-| Aggregate partial results into a unified report | |
+| Managing process pool for parallel execution | |
+| Interfacing with Incremental Logic to skip unchanged files | |
+| Aggregating diagnostics from multiple workers | |
+| Providing progress updates to the UI layer | |
 
 
 ```python
-class AnalysisOrchestrator:
-    async def run_parallel_analysis(
-        self, 
-        paths: List[Path], 
-        rules: List[Rule]
-    ) -> AnalysisReport:
-        # Implementation of worker distribution
-        pass
+class Orchestrator:
+    async def lint_workspace(self, root_dir: Path) -> List[Diagnostic]:
+        tasks = await self.incremental_engine.filter_changed(root_dir)
+        async with ProcessPoolExecutor() as executor:
+            results = await asyncio.gather(*[
+                executor.submit(self.worker.process_file, t) 
+                for t in tasks
+            ])
+        return self.aggregator.flatten(results)
 ```
 
 
 
 
-### 2. Multidimensional Rule Engine (`usecases`)
+### 2. High-Fidelity Parsing Worker (`usecases`)
 
 
 
 
-**Path:** `src/usecases/rule_engine.py`
+**Path:** `src/usecases/worker.py`
 
 | Responsibility | Description |
 |---|---|
-| Execute PEP8, Security, and Logic checks via AST traversal | |
-| Map AST nodes to physical source code locations | |
-| Filter violations based on configuration severity | |
+| Generating high-fidelity ASTs from Python source | |
+| Applying security and logic rules (E3/E6) | |
+| Mapping nodes to absolute file positions (E16) | |
+| Extracting code snippets for UI highlighting | |
 
 
 ```python
-class RuleEvaluator(ast.NodeVisitor):
-    def __init__(self, check_groups: List[BaseCheck]):
-        self.violations = []
-
-    def visit_FunctionDef(self, node: ast.FunctionDef):
-        for check in self.check_groups:
-            if result := check.verify(node):
-                self.violations.append(result)
-        self.generic_visit(node)
+class ParsingWorker:
+    def process_file(self, content: str, path: Path) -> List[Diagnostic]:
+        tree = self.parser.parse(content)
+        diagnostics = []
+        for rule in self.registry.get_active_rules():
+            issues = rule.check(tree)
+            diagnostics.extend([
+                Diagnostic(issue, source_map=tree.get_map(issue.node)) 
+                for issue in issues
+            ])
+        return diagnostics
 ```
 
 
 
 
-### 3. AST Provider & Metadata Extractor (`adapters`)
+### 3. Incremental State Manager (`infrastructure`)
 
 
 
 
-**Path:** `src/adapters/ast_provider.py`
+**Path:** `src/infrastructure/cache.py`
 
 | Responsibility | Description |
 |---|---|
-| Convert source strings to AST representations | |
-| Extract exact byte-offsets for terminal highlighting | |
-| Handle file-system read operations and encoding detection | |
+| Calculating fast content hashes (BLAKE3) | |
+| Maintaining a local database of linting state | |
+| Identifying modified files for incremental processing | |
 
 
 ```python
-class ASTProvider:
-    def parse_source(self, source_code: str) -> ast.Module:
-        return ast.parse(source_code, type_comments=True)
+class StateManager:
+    def get_diff(self, files: List[Path]) -> List[Path]:
+        current_hashes = {f: self.hash(f) for f in files}
+        stored = self.db.query_all_hashes()
+        return [f for f, h in current_hashes.items() if h != stored.get(f)]
 
-    def get_node_metadata(self, node: ast.AST) -> NodeLocation:
-        return NodeLocation(
-            line=node.lineno,
-            col=node.col_offset,
-            end_line=getattr(node, 'end_lineno', node.lineno)
-        )
+    def persist_results(self, file: Path, diagnostics: List[Diagnostic]):
+        self.db.upsert(file, self.hash(file), diagnostics)
 ```
 
 
 
 
-### 4. Incremental Cache Manager (`infrastructure`)
+### 4. High-Fidelity Result Renderer (`adapters`)
 
 
 
 
-**Path:** `src/infrastructure/cache_manager.py`
+**Path:** `src/adapters/terminal_ui.py`
 
 | Responsibility | Description |
 |---|---|
-| Track file modifications using SHA-256 hashes | |
-| Persist analysis results to disk for cross-run speedups | |
-| Ensure cache consistency during interrupted runs | |
+| Visualizing diagnostics with color and highlighting (E16) | |
+| Rendering code context panels (E20) | |
+| Formatting output for terminal-specific constraints | |
 
 
 ```python
-class CacheManager:
-    def get_cached_result(self, file_path: Path) -> Optional[StoredAnalysis]:
-        # Check hash and return cached violations if valid
-        pass
-    
-    def update_cache(self, file_path: Path, results: List[Violation]):
-        pass
+class ResultRenderer:
+    def render(self, diagnostics: List[Diagnostic]):
+        console = Console()
+        for diag in diagnostics:
+            syntax = Syntax(
+                diag.code_snippet, 
+                "python", 
+                line_numbers=True,
+                highlight_lines={diag.line}
+            )
+            console.print(Panel(syntax, title=f"[red]{diag.rule_id}"))
 ```
 
 
@@ -196,36 +202,36 @@ No new data models are introduced unless specified in the component descriptions
 
 
 
-### Property F0a-P1: Cache Integrity Invariant
+### Property F0a-P1: Incremental Consistency
 
 
 
 
-*For any file F, if the SHA-256 hash of F remains unchanged since the last execution, the Orchestrator shall return the cached analysis results for F without invoking the AST Provider.*
+*For any file F with content C, if hash(C) is unchanged since the last execution, the set of Diagnostics returned for F must be identical to the previous execution.*
 
-**Validates: Requirements E8, E7**
-
-
-
-### Property F0a-P2: Metadata Accuracy Invariant
+**Validates: Requirements E8**
 
 
 
-
-*For any reported violation V, the metadata (line, column) provided by the AST Provider must correspond to the exact character offset of the offending node in the original source code.*
-
-**Validates: Requirements E16, E5, E13**
-
-
-
-### Property F0a-P3: Parallel Scalability Invariant
+### Property F0a-P2: Mapping Fidelity
 
 
 
 
-*For any analysis run on N files, the total execution time must scale as O(N/P) where P is the number of available CPU cores, excluding I/O bound wait times.*
+*For any Diagnostic D pointing to line L and column K, the rendered snippet in the UI must contain the exact character at position (L, K) from the source file.*
 
-**Validates: Requirements E8, E7**
+**Validates: Requirements E16, E20**
+
+
+
+### Property F0a-P3: Detection Completeness
+
+
+
+
+*For any source file F containing a known vulnerability pattern V defined in the Registry, the Parsing Worker must generate at least one Diagnostic D targeting the coordinates of V.*
+
+**Validates: Requirements E1, E3, E6**
 
 
 
@@ -236,9 +242,9 @@ No new data models are introduced unless specified in the component descriptions
 
 | Scenario | Handling |
 |---|---|
-| Corrupt or Non-UTF8 Python file encountered during scan | The error is caught at the adapter level, a 'ParsingViolation' is generated for the specific file, and the Orchestrator continues processing remaining files in the queue. |
-| Rule-specific logic crashes on an unexpected AST node structure | The Rule Engine uses a safety wrapper to catch exceptions in individual check logic, logging the failure but allowing other rules (PEP8, security) to finish execution. |
-| Incompatible cache version or corrupted SQLite metadata store | The Cache Manager invalidates the local cache file and proceeds with a full fresh scan of the codebase. |
+| Invalid Python syntax in one of the scanned files. | Catch SyntaxError, generate a special 'ParseFailure' Diagnostic with the line number from the exception, and continue processing remaining files. |
+| ProcessPoolExecutor encounters a worker crash or SIGINT. | Flush and close the cache database to prevent corruption, then exit with a non-zero code. |
+| Terminal doesn't support Rich/Color formatting. | Fall back to standard colorless text output but maintain alignment and line numbering. |
 
 
 
@@ -247,6 +253,12 @@ No new data models are introduced unless specified in the component descriptions
 
 
 
-The testing strategy for the AST Engine combines traditional unit testing with performance-focused integration tests. Regression testing will utilize the existing suite of PEP8 and security test cases, ensuring that the move to a parallel architecture does not introduce race conditions or non-deterministic violation reports. CI verification will be automated via a dedicated workflow executing `pytest` with the `pytest-xdist` plugin to simulate multi-core environments.
+The testing strategy focuses on high-concurrency stress tests and property-based verification of AST mapping. 
 
-New property-based tests using the 'Hypothesis' library will be implemented to verify the Metadata Accuracy Invariant. These tests will generate random Python snippets with known violations and assert that the extracted AST coordinates match the generation parameters. For configuration, we will use a 'performance' tag in our test suite to separate long-running scalability checks from the standard test run. Performance benchmarks will target 1,000+ files per second on standard 8-core hardware, with a specific focus on cache hit/miss ratio verification.
+Regression Testing: We will use a 'Golden Master' approach where we run the linter on popular open-source repositories (e.g., Django, Flask) and verify that the number of detected issues remains constant across refactors of the orchestrator.
+
+CI Verification: The CI pipeline will execute `pytest -n auto` to test the parallel orchestrator's stability. We will also use `hypothesis` to generate random Python syntaxes to ensure the parser never crashes (fuzzing).
+
+Property-Based Tests: Using the Hypothesis library, we will assert that 'For any randomized code change, the Incremental Engine correctly identifies the file as dirty'. We will run 1000 iterations per PR.
+
+Configuration: Tests will be tagged with `@pytest.mark.performance` for the benchmarking suite. We use `pytest-benchmark` to ensure no regression in parsing speed (threshold: <50ms/file).

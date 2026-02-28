@@ -8,9 +8,9 @@
 
 
 
-The implementation follows a domain-first, layered architecture approach, starting with the core data models and incremental caching logic. This ensures a stable foundation for the AST Provider before layering on the complex parallel orchestration and multidimensional rule sets. By building the Cache Manager and AST Provider first, we establish a verifiable baseline for accuracy and speed on single files before scaling to multi-core execution.
+The implementation strategy follows a domain-first approach, prioritizing the High-Fidelity Parsing Worker and data models to ensure core structural analysis is robust before scaling. We will first build the parsing logic and diagnostic data structures, followed by the incremental state management to handle performance, then the parallel orchestrator to manage concurrency, and finally the terminal UI for result visualization.
 
-The second phase focuses on the Parallel Analysis Orchestrator and Rule Engine. We use a multiprocessing approach to bypass the Python GIL, fulfilling the Parallel Scalability Invariant. The orchestration logic is designed to be 'cache-aware', checking file hashes against the Incremental Cache Manager before dispatching work to the pool, which minimizes developer idle time in CI/CD environments.
+This ordering is selected because the Parallel Orchestrator and UI depend heavily on the output format and performance characteristics of the Worker. By establishing the 'Detection Completeness' and 'Mapping Fidelity' properties early, we ensure that subsequent speed optimizations do not compromise the accuracy of the linting results.
 
 
 
@@ -20,95 +20,89 @@ The second phase focuses on the Parallel Analysis Orchestrator and Rule Engine. 
 
 
 
-- [ ] F0a-T1. Foundation: Domain Models and Incremental Caching
+- [ ] F0a-T1. Core Domain and Parsing Implementation
 
-- [ ] F0a-T1.1 Define Domain Models and Cache Infrastructure
+- [ ] F0a-T1.1 Define Domain Entities and Diagnostic Models
 
-- Define AnalysisResult, Violation, and NodeMetadata dataclasses in src/domain/models.py
+- Create `src/domain/models.py` to define `Diagnostic`, `Coordinate`, and `IssueSeverity`.
 
-- Implement SHA-256 hash generation for source files
+- Implement `Diagnostic` class with fields for line, column, end_line, end_column, and message.
 
-- Create IncrementalCacheManager in src/infrastructure/cache_manager.py with 'get' and 'set' methods using a local SQLite or JSON backend
+- Ensure the model supports JSON serialization for caching.
+
+- _Requirements: 1, 3_
+
+
+- [ ] F0a-T1.2 Implement High-Fidelity Parsing Worker
+
+- Implement `ParsingWorker` in `src/usecases/worker.py`.
+
+- Create `ASTVisitor` subclass using the `ast` module to traverse the tree.
+
+- Implement logic to capture precise line/column offsets for identified nodes.
+
+- Verification: Run unit tests against a suite of Python files with known logical errors.
+
+- _Requirements: 1, 3_
+
+
+
+- [ ] F0a-T2. Scalability and Performance Infrastructure
+
+- [ ] F0a-T2.1 Develop Incremental State Manager
+
+- Create `FileCache` in `src/infrastructure/cache.py`.
+
+- Implement content hashing (SHA-256) to track file changes.
+
+- Implement `get_cached_diagnostics` and `save_diagnostics` methods.
+
+- Verification: Assert that re-running the tool on unchanged files returns results without re-triggering the AST visitor.
 
 - _Requirements: 2_
-
-
-- [ ] F0a-T1.2 Implement AST Provider & Metadata Extractor
-
-- Implement ASTProvider in src/adapters/ast_provider.py using the 'ast' and 'astroid' libraries
-
-- Create MetadataExtractor to map AST nodes to line/column numbers
-
-- Ensure the provider handles UTF-8 encoding and edge cases for malformed syntax
-
-- _Requirements: 3_
-
-
-- [ ] F0a-T1.3 Checkpoint: Cache and Extraction Accuracy
-
-- Run unit tests to verify that modifying a file changes its hash and invalidates the cache
-
-- Assert that line/column metadata matches the physical position of code tokens within +/- 0 characters
-
-
-
-- [ ] F0a-T2. Orchestration: Parallel Engine and Rules
-
-- [ ] F0a-T2.1 Build Multidimensional Rule Engine
-
-- Implement MultidimensionalRuleEngine in src/usecases/rule_engine.py
-
-- Define extensible Rule interface: PEP8Rule, SecurityRule, LogicalErrorRule
-
-- Integrate 'flake8' or 'pylint' internal APIs for PEP 8 compliance checks [E3]
-
-- Implement basic Taint Analysis for security vulnerability detection [E6]
-
-- _Requirements: 1_
 
 
 - [ ] F0a-T2.2 Implement Parallel Orchestrator
 
-- Implement ParallelAnalysisOrchestrator in src/usecases/orchestrator.py
+- Implement `ParallelOrchestrator` in `src/usecases/orchestrator.py`.
 
-- Use 'concurrent.futures.ProcessPoolExecutor' for parallel execution [E8]
+- Use `concurrent.futures.ProcessPoolExecutor` to distribute files to `ParsingWorker` instances.
 
-- Logic: (1) Filter files via CacheManager, (2) Map remaining files to ProcessPool, (3) Aggregate results from RuleEngine, (4) Update CacheManager [E7]
+- Integrate the `FileCache` to skip already-processed files during orchestration.
+
+- Implement a progress reporter to track completion percentages.
 
 - _Requirements: 2_
 
 
-- [ ] F0a-T2.3 Checkpoint: Parallel Efficiency and Rule Coverage
 
-- Test the system with a large codebase (e.g., 500+ files)
+- [ ] F0a-T3. Verification and Testing
 
-- Measure execution time with 1, 2, and 4 cores to verify O(N/P) scaling
+- [ ] F0a-T3.1 Checkpoint: Property and Performance Verification
 
-- Verify that only changed files are re-analyzed on subsequent runs
+- Run a battery of tests to ensure ‘Detection Completeness’ by verifying that a known list of vulnerabilities in a test suite are all flagged.
 
+- Verify ‘Mapping Fidelity’ by checking that the coordinate pairs in diagnostics exactly match the source code character locations.
 
+- Verify ‘Incremental Consistency’ by running the orchestrator twice on a large repository and ensuring the outputs are bit-for-bit identical.
 
-- [ ] F0a-T3. Verification and Visual Integration
-
-- [ ] F0a-T3.1 Property Test: AST Robustness and Accuracy
-
-- Use Hypothesis to generate random Python strings and verify that the AST Provider never crashes
-
-- Assert that Metadata Accuracy Invariant holds for generated snippets
+- _Requirements: 1, 2_
 
 
-- [ ] F0a-T3.2 Visual Metadata Localization (UI)
 
-- Create a CLI entry point that outputs color-coded violations to the terminal [E16]
+- [ ] F0a-T4. Presentation Layer
 
-- Ensure the visual output maps correctly to the user's terminal dimensions [E5][E13]
+- [ ] F0a-T4.1 Implement High-Fidelity Result Renderer
+
+- Implement `TerminalRenderer` in `src/adapters/terminal_ui.py`.
+
+- Use the `Coordinate` data from diagnostics to extract and highlight the specific code snippet.
+
+- Implement ANSI color coding for different severity levels (e.g., Red for Errors, Yellow for Warnings).
+
+- Integrate with `rich` or a similar library for advanced terminal formatting.
 
 - _Requirements: 3_
-
-
-- [ ] F0a-T3.3 Final System Checkpoint
-
-- Final end-to-end integration test of the full pipeline: Cache -> Orchestrator -> Rule Engine -> AST Provider -> Terminal Output
 
 
 
@@ -118,5 +112,11 @@ The second phase focuses on the Parallel Analysis Orchestrator and Rule Engine. 
 
 
 
-- Tasks marked with (*) are optional optimizations (e.g., SIMD-accelerated hashing). Traceability is maintained via requirement_refs to ensure every DevOps and Developer need is met. The 'split-first' strategy ensures code maintainability before adding complex parallel logic. Backward compatibility is guaranteed by maintaining the Orchestrator's public API throughout the transition from sequential to parallel execution.
+- Tasks marked with (*) are optional optimizations for the initial MVP.
+
+- Domain-first ordering ensures that the core parsing logic is stable before building the infrastructure for orchestration and UI.
+
+- Property-refs are used to ensure that the implementation directly addresses the formal correctness criteria defined in the specification.
+
+- Backward compatibility is maintained by ensuring the Incremental State Manager's cache schema is versioned.
 

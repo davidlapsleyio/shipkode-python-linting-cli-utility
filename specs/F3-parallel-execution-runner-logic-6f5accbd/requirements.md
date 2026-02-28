@@ -8,7 +8,7 @@
 
 
 
-Parallel Execution Runner Logic (F3) is the high-performance core of Hyper-Lint, engineered to address the performance bottlenecks found in traditional linear linters. By leveraging multi-core parallel processing and incremental analysis, this logic ensures that even Python codebases exceeding 50,000 lines of code can be validated rapidly within CI/CD pipelines [E8]. This feature is critical for reducing developer idle time and providing near-instant feedback on style, logic, and security vulnerabilities without sacrificing the deep analysis required for organizational quality gates [E4][E7].
+Hyper-Lint is designed to address the performance bottlenecks associated with static analysis in large-scale Python environments. As codebases grow, linear processing leads to increased developer idle time and slow CI/CD feedback loops. This feature introduces a Parallel Execution Runner that leverages multi-core architectures and incremental processing to ensure high performance [E8]. By isolating changed files and distributing the workload across available CPU resources, Hyper-Lint serves as an efficient quality gate for enterprise-scale repositories [E4][E7].
 
 
 
@@ -23,7 +23,7 @@ Parallel Execution Runner Logic (F3) is the high-performance core of Hyper-Lint,
 
 
 
-**User Story:** As a DevOps/Platform Engineer, I want to execute linting across multi-core agents [E8], so that I can validate large PRs in under 60 seconds.
+**User Story:** As a DevOps/Platform Engineer, I want the linter to utilize parallel processing [E8], so that I can validate large codebases efficiently within CI/CD pipelines [E4][E7].
 
 
 
@@ -33,43 +33,20 @@ Parallel Execution Runner Logic (F3) is the high-performance core of Hyper-Lint,
 
 
 
-1. WHEN the system initiates a scan on a multi-core environment, THE Runner SHALL spawn worker processes to analyze files in parallel [E8].
+1. WHEN the linter is executed on a machine with multiple CPU cores, THE system SHALL distribute the file analysis tasks across all available logical processors [E8].
 
-2. IF the codebase size is identified as large-scale, THEN the system SHALL distribute PEP 8, logic, and security checks across available CPU cores [E3][E6].
+2. IF the codebase exceeds 50,000 lines of code, THEN the system SHALL complete the analysis in under 60 seconds when running on recommended build agent hardware.
 
-3. The system SHALL ensure that parallel execution does not impact the accuracy of the final static summary table [E15].
-
-
-
-### Requirement 2: Incremental Analysis Logic
+3. WHEN parallel execution is active, THE system SHALL maintain the integrity of the error counts categorized by Security, Style, and Syntax in the final summary table [E15].
 
 
 
-
-**User Story:** As a DevOps/Platform Engineer, I want the system to utilize incremental linting [E8], so that I can ensure high performance on the largest codebases by only scanning changed files.
+### Requirement 2: Incremental Processing Logic
 
 
 
 
-#### Acceptance Criteria
-
-
-
-
-1. WHEN a linting request is received, THE system SHALL identify which Python files have changed since the last successful execution [E8].
-
-2. IF a file has not been modified and its previous results are cached, THEN the system SHALL skip the analysis for that file to save resources [E8].
-
-3. The system SHALL aggregate cached results with new results to generate a complete visual report [E12][E16].
-
-
-
-### Requirement 3: Parallel Result Aggregation
-
-
-
-
-**User Story:** As an Aesthetics-Driven Developer, I want parallelized results to be consolidated into a beautifully formatted report [E9][E10], so that I receive a cohesive view of repository health [E15].
+**User Story:** As a DevOps/Platform Engineer, I want the system to support incremental linting [E8], so that developer idle time is minimized during iterative local development [E5][E13].
 
 
 
@@ -79,11 +56,34 @@ Parallel Execution Runner Logic (F3) is the high-performance core of Hyper-Lint,
 
 
 
-1. WHEN parallel tasks complete, THE system SHALL gather all detected security, style, and syntax errors into a single result set [E15].
+1. WHEN a subsequent execution occurs after an initial scan, THE system SHALL only analyze files that have been modified since the last successful execution [E8].
 
-2. THE system SHALL format the aggregated data into a non-interactive TUI report regardless of the number of parallel workers used [E12][E14].
+2. IF a file's content hash has not changed, THEN the system SHALL retrieve the previous linting results from the local cache instead of re-running rules.
 
-3. The system SHALL maintain the visual highlighting of code lines even when results are merged from different parallel threads [E16].
+3. WHEN incremental linting is utilized, THE system SHALL still produce a complete static report including both cached and new findings [E12][E14].
+
+
+
+### Requirement 3: CI/CD Performance Integration
+
+
+
+
+**User Story:** As a DevOps/Platform Engineer, I want the parallel runner to be fully compatible with CI/CD pipelines [E7], so that insecure or messy code is prevented from reaching production [E4].
+
+
+
+
+#### Acceptance Criteria
+
+
+
+
+1. WHEN running in a CI/CD environment, THE system SHALL ensure the parallel runner acts as an automated quality gate [E4][E7].
+
+2. IF any Security, Style, or Syntax errors exceed the configured threshold, THEN the runner SHALL return a non-zero exit code to the pipeline [E3][E6].
+
+3. WHEN the execution completes in a CI environment, THE system SHALL output a static, non-interactive report compatible with standard logging drivers [E11][E12].
 
 
 

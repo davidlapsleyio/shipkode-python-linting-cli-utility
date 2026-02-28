@@ -8,7 +8,7 @@
 
 
 
-The Modular Linting Plugin Architecture is a core framework enhancement designed to decouple rule logic from the engine's execution core. By implementing a plugin-based system, Hyper-Lint enables the specialized categorization and concurrent execution of Style, Security, and Logic rules. This architecture transition solves the bottleneck of monolithic rule sets, allowing the system to scale across large codebases while maintaining the high-fidelity output expected by developers. This feature ensures that the linter can act as a comprehensive quality gate that is easily extensible as new PEP standards or security threats emerge.
+The Modular Linting Plugin Architecture is a core framework enhancement for Hyper-Lint designed to decouple rule logic from the core execution engine. By organizing linting capabilities into discrete modules—Style, Security, and Logic—the system enables specialized targeting of Python codebases to ensure PEP 8 compliance, structural integrity, and vulnerability mitigation. This architecture supports the dual needs of high-performance parallel processing for large-scale repositories and flexible rule enforcement for diverse development teams. This feature transforms Hyper-Lint from a monolithic tool into an extensible platform capable of providing categorized, high-fidelity diagnostics that empower developers to prioritize critical fixes while maintaining a clean, performant codebase.
 
 
 
@@ -18,35 +18,12 @@ The Modular Linting Plugin Architecture is a core framework enhancement designed
 
 
 
-### Requirement 1: Core Rule Categorization Engine
+### Requirement 1: Core Rule Categorization
 
 
 
 
-**User Story:** As a DevOps/Platform Engineer, I want the linter to categorize rules into Style, Security, and Logic clusters [E3][E6], so that I can provide teams with an immediate overview of repository health [E15].
-
-
-
-
-#### Acceptance Criteria
-
-
-
-
-1. WHEN the Hyper-Lint engine initializes, THE system SHALL load rule definitions from the native Style, security_vulnerabilities, and logical_code_errors modules [E3][E6].
-
-2. IF a rule is categorized as PEP 8 compliance, THEN the system SHALL assign it to the 'Style' category in report metadata [E3][E15].
-
-3. IF a rule targets logical errors or security gaps, THEN the system SHALL categorize it as 'Syntax' or 'Security' respectively in the summary table [E15].
-
-
-
-### Requirement 2: Parallelized Plugin Execution Strategy
-
-
-
-
-**User Story:** As a DevOps/Platform Engineer, I want to execute different linting categories in parallel [E8], so that I can minimize Developer Idle Time during CI/CD gate checks [E4][E7].
+**User Story:** As a DevOps/Platform Engineer, I want the linter to support distinct rule categories for Style, Logic, and Security [E3][E6], so that I can implement specific quality gates for production code [E7].
 
 
 
@@ -56,20 +33,20 @@ The Modular Linting Plugin Architecture is a core framework enhancement designed
 
 
 
-1. WHEN the linter is executed on a codebase, THE engine SHALL utilize parallel_processing to run independent plugin categories across available CPU cores [E8].
+1. WHEN the Hyper-Lint engine initializes, THE system SHALL load distinct modules for Style, Security, and Logical checks [E3][E6].
 
-2. IF the incremental_linting flag is enabled, THEN the engine SHALL only execute plugins on files that have changed since the last successful execution [E8].
+2. IF a module encounters a PEP 8 violation, THEN the system SHALL label the diagnostic as a Style error for reporting [E3][E6].
 
-3. WHEN running in a CI/CD pipeline, THE system SHALL maintain a sub-60 second execution time for repos under 50,000 lines of code through parallel plugin execution [E7][E8].
-
-
-
-### Requirement 3: Unified Plugin Output Aggregator
+3. IF a module identifies a potential security flaw, THEN the system SHALL label the diagnostic as a Security error in the summary [E6][E15].
 
 
 
+### Requirement 2: Parallelized Plugin Execution
 
-**User Story:** As an Aesthetics-Driven Developer, I want a unified report that combines all plugin results into a color-coded TUI [E9][E10], so that I can identify and fix issues instantly without leaving the terminal [E5][E13][E16].
+
+
+
+**User Story:** As a DevOps/Platform Engineer, I want the plugin architecture to support parallel processing and incremental execution [E8], so that I can minimize developer idle time during CI/CD builds.
 
 
 
@@ -79,11 +56,34 @@ The Modular Linting Plugin Architecture is a core framework enhancement designed
 
 
 
-1. WHEN a plugin identifies a violation, THE system SHALL capture the specific line of code and file location for visual_highlighting [E16].
+1. WHEN the engine executes across multiple CPU cores, THE system SHALL distribute linting tasks for different files to specialized plugin instances in parallel [E8].
 
-2. THE engine SHALL aggregate metadata from all executed plugins to generate a static_report using a Rich TUI [E10][E12][E14].
+2. IF incremental linting is enabled, THEN the system SHALL only execute plugins on files modified since the last successful execution [E8].
 
-3. IF multiple plugins report errors in the same file, THEN the output summary table SHALL consolidate these counts by category [E15].
+3. THE system SHALL perform these operations at a speed sufficient to process large codebases (e.g., 50,000 LoC) within performance targets [E8].
+
+
+
+### Requirement 3: Plugin-Driven Diagnostic Reporting
+
+
+
+
+**User Story:** As an Aesthetics-Driven Developer, I want linting plugins to provide rich diagnostic data [E18][E20], so that I can fix errors instantly using high-fidelity visual highlights in the terminal [E13][E16].
+
+
+
+
+#### Acceptance Criteria
+
+
+
+
+1. WHEN any linting plugin identifies an issue, THE system SHALL capture the specific line of code and the associated diagnostic message [E16][E18].
+
+2. THE system SHALL pass these plugin findings to the Rich TUI to generate color-coded, highlighted source code snippets [E10][E14][E20].
+
+3. IF the plugin returns multiple errors, THEN the system SHALL aggregate them into a summary table categorized by type: Security, Style, and Syntax [E15].
 
 
 

@@ -8,9 +8,9 @@
 
 
 
-This plan follows a domain-driven approach, beginning with the definition of core data structures to ensure type safety across the parallel pipeline. Initially, we establish the domain models and interfaces, then move to the concurrent execution logic which is the heart of the system's performance goals.
+The implementation strategy follows a domain-driven approach, prioritizing the definition of core data structures and interfaces before building the execution engine and external reporters. We start by defining the 'Rule' and 'Diagnostic' domain models to ensure all subsequent components adhere to mandatory categorization and high-fidelity reporting. This ensures that the foundation supports the 'Style, Logic, Security' tagging requirement from the outset.
 
-The implementation is phased to prioritize the 'Engine' and 'Execution' before the 'Presentation'. This ensures that the parallelization logic is verified for efficiency (Property 1) before we invest in the complex TUI rendering. We conclude with the integration of a unified aggregator to bridge the gap between concurrent engine outputs and the final user interface.
+The second phase builds the execution logic, introducing a parallel task scheduler and an incremental caching layer based on file hashing. This fulfills the performance mandates by ensuring unchanged files skip re-processing. Finally, we implement the terminal adapter to transform these high-fidelity diagnostics into visual output. This ordering ensures we don't build UI components for data that doesn't exist yet, and guarantees that the engine is optimized for CI/CD environments before finalizing the reporter.
 
 
 
@@ -20,101 +20,115 @@ The implementation is phased to prioritize the 'Engine' and 'Execution' before t
 
 
 
-- [ ] F0b-T1. Domain Model Definition
+- [ ] F0b-T1. Domain Model & Type Definition
 
 - [ ] F0b-T1.1 Define Core Domain Entities and Interfaces
 
-- Create `src/domain/models.ts` if not existing.
+- Create `src/domain/types.ts` to define the `RuleCategory` enum: {Style, Logic, Security}.
 
-- Define `LintCategory` enum: STYLE, SECURITY, LOGIC.
+- Define the `Diagnostic` interface with `category`, `message`, and `range` (line/column).
 
-- Define `LintResult` interface with fields: id, message, category, severity, line, file.
+- Create the `RulePlugin` interface requiring a `category` property and an `execute` method.
 
-- Define `PluginInterface` with an `execute()` method returning `Promise<LintResult[]>`.
+- _Requirements: 1, 3_
 
-- Define `AggregatedReport` structure.
 
-- Verification: Compile types with strict null checks.
+- [ ] F0b-T1.2 Implement Plugin Registry and Validation
+
+- Create `src/domain/registry.ts`.
+
+- Implement the `PluginRegistry` class to manage registration and retrieval of plugins by category.
+
+- Add validation logic to ensure no plugin is registered without a valid category.
 
 - _Requirements: 1_
 
 
 
-- [ ] F0b-T2. Parallel Execution & Aggregation Engine
+- [ ] F0b-T2. Execution Engine and Incremental Logic
 
-- [ ] F0b-T2.1 Implement Parallel Execution Orchestrator
+- [ ] F0b-T2.1 Create File Hashing and Caching Infrastructure
 
-- Create `src/usecases/orchestrator.ts`.
+- Create `src/infrastructure/cache.ts`.
 
-- Implement `PluginOrchestrator` class.
+- Implement a `FileHasher` utility using SHA-256 to track file content changes.
 
-- Use `Promise.all` or a worker pool for parallel execution of registered plugins grouped by category.
-
-- Implement timing logic to measure execution duration for performance tracking.
-
-- Verification: Unit test with mock plugins that utilize `setTimeout` to simulate workloads.
+- Build the `ResultCache` to store diagnostics by content hash and plugin version.
 
 - _Requirements: 2_
 
 
-- [ ] F0b-T2.2 Implement Unified Result Aggregator
+- [ ] F0b-T2.2 Develop Parallel Lint Engine Core
 
-- Create `src/usecases/aggregator.ts`.
+- Update `src/core/engine.ts`.
 
-- Implement `ResultAggregator` to collect `LintResult` streams and group them by `LintCategory`.
+- Implement the workflow: 1. Check Cache, 2. If Miss, Execute Rules, 3. Update Cache.
 
-- Ensure all results are captured without loss during merging.
+- Ensure the engine returns tagged diagnostics matching the `RuleCategory`.
 
-- Verification: Test with varying plugin outputs to ensure the aggregate count matches the sum of individual results.
-
-- _Requirements: 1, 3_
-
-
-- [ ] F0b-T2.3 Checkpoint: Orchestration Engine Validation
-
-- Verify that individual plugin failures do not crash the orchestrator.
-
-- Validate that the Categorization Completeness property holds under load.
-
-- Ensure type safety across usecase boundaries.
+- _Requirements: 1, 2_
 
 
 
-- [ ] F0b-T3. Adapter Development & Property Verification
+- [ ] F0b-T3. Parallelization and Performance Testing
 
-- [ ] F0b-T3.1 Create Color-coded TUI Renderer
+- [ ] F0b-T3.1 Implement Parallel Task Scheduler
 
-- Create `src/adapters/tui_renderer.ts`.
+- Implement `TaskScheduler` in `src/infrastructure/scheduler.ts` using Worker Threads or a Process Pool.
 
-- Implement `TUIRenderer` class using an ANSI library (e.g., chalk or picocolors).
+- Distribute file-linting tasks across available CPU cores.
 
-- Map `SECURITY` category results to Red ANSI sequences.
+- Integrate the scheduler into the `ParallelLintEngine`.
 
-- Map `STYLE` and `LOGIC` to distinct configurable colors (Yellow/Blue).
+- _Requirements: 2_
 
-- Verification: Visual verification of output colors in a terminal emulator.
+
+- [ ] F0b-T3.2 Property Test: Incremental Performance Bound validation
+
+- Create `tests/properties/performance.test.ts`.
+
+- Baseline: Run linter on 100 files.
+
+- Modified: Re-run on same files and assert execution time < 10% of baseline.
+
+- _Requirements: 2_
+
+
+
+- [ ] F0b-T4. Rich Reporting and Adapter Implementation
+
+- [ ] F0b-T4.1 Develop Rich Diagnostic Terminal Reporter
+
+- Implement `TerminalReporter` in `src/adapters/reporters/terminal_reporter.ts`.
+
+- Use a library like `chalk` or `kleur` to highlight Style vs Security diagnostics.
+
+- Implement the range-to-visual mapping to underline exact code coordinates.
 
 - _Requirements: 3_
 
 
-- [ ] F0b-T3.2 Property-Based Correctness Testing
+- [ ] F0b-T4.2 Property Test: Diagnostic Fidelity and Categorization Check
 
-- Write property-based tests using a framework like fast-check.
+- Create `tests/properties/diagnostic.test.ts`.
 
-- Property 1: Test that execution time of N concurrent plugins is significantly less than sequential T.
+- Assert that every diagnostic produced by the engine contains start/end line and column properties and a valid category.
 
-- Property 2: Generate random LintResults and verify every single one appears in the Aggregator.
+- _Requirements: 1, 3_
 
-- Property 3: Intercept stdout and verify that 'Security' results always contain the '\x1b[31m' (Red) sequence.
+
+
+- [ ] F0b-T5. Checkpoint: System Integrity and Requirements Traceability
+
+- [ ] F0b-T5.1 Final End-to-End Integration Check
+
+- Verify that Style rules, Logic rules, and Security rules all execute and report correctly.
+
+- Ensure the system handles plugin registration dynamically without core engine changes.
+
+- Verify terminal output contains high-fidelity visual highlights for all categories.
 
 - _Requirements: 1, 2, 3_
-
-
-- [ ] F0b-T3.3 Checkpoint: System Integration & Performance Review
-
-- Final end-to-end integration test from CLI trigger to TUI output.
-
-- Confirm performance metrics meet the (Sum/Parallelism) + Overhead target.
 
 
 
@@ -124,11 +138,11 @@ The implementation is phased to prioritize the 'Engine' and 'Execution' before t
 
 
 
-- Tasks marked with (*) are optional optimization steps for extremely large repositories.
+- Tasks marked with (*) are optimization-focused but required for property 2 compliance.
 
-- Traceability: Every sub-task is mapped to specific Requirements (R) and Properties (P) to ensure the implementation fulfills the business value and remains correct.
+- Traceability is maintained by mapping every sub-task to a Requirement ID (e.g., E3) or Property (e.g., Mandatory Categorization).
 
-- Ordering Constraints: Domain models must be stabilized before orchestrator development to prevent type-safety regression.
+- Parallelization (Phase 3) must follow the Domain model (Phase 1) to ensure the Scheduler has a stable data contract for Result types.
 
-- Forward Compatibility: The Category enum is designed to be extensible without breaking the TUI renderer logic.
+- Backward compatibility is maintained by ensuring the 'Diagnostic' type remains a superset of the legacy reporting format.
 

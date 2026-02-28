@@ -8,9 +8,9 @@
 
 
 
-The implementation strategy follows a domain-driven approach, starting with the core Exit Code Registry and reporting schemas before moving into high-performance execution engines. This ensures that the 'What' (failure conditions and report formats) is strictly defined before building the 'How' (parallelism and incremental caching).
+The implementation strategy follows a domain-first approach, prioritizing the core logic for execution and result management before external adapters. We will first build the Parallel Task Runner and Exit Code Manager (Usecases) to establish how issues are aggregated and how the process lifecycle is managed. This ensures the engine is capable of producing the necessary data structures before we implement the Reporter adapters.
 
-Phase 1 and 2 establish the reliability of the quality gate by standardizing exit behaviors and machine-readable outputs. Phase 3 and 4 focus on performance optimizations, introducing worker-thread-based parallelism and a content-addressable cache to support large-scale repository validation. This incremental approach allows for early integration into CI/CD pipelines as a basic gate before layering on enterprise-grade performance features.
+The second phase focuses on output adapters, specifically building the machine-readable JSON/JUnit reporters and the colorized CI logger. This sequence is chosen because reporting depends on the data aggregation logic defined in the usecases. Finally, we will implement property-based tests to verify that parallel execution and exit code logic remain deterministic and compliant with the specified invariants.
 
 
 
@@ -20,98 +20,109 @@ Phase 1 and 2 establish the reliability of the quality gate by standardizing exi
 
 
 
-- [ ] F4-T1. Domain Definitions and Reporting Core
+- [ ] F4-T1. Core Execution & Result Domain
 
-- [ ] F4-T1.1 Define Exit Code Registry and Domain Models
+- [ ] F4-T1.1 Implement Parallel Task Runner logic
 
-- Create src/domain/exit_codes.ts to define the LINT_EXIT_CODES enum (SUCCESS=0, VIOLATIONS_FOUND=1, SYSTEM_ERROR=2).
+- Create `src/usecases/parallel_executor.py`
 
-- Define QualityGateConfig interface to hold threshold settings (max-warnings, fail-on-error).
+- Implement `ExecutionEngine` class using `concurrent.futures.ProcessPoolExecutor`
 
-- Verification: Unit test the logic that maps finding counts to specific exit codes.
+- Develop `PartitionStrategy` to split file lists based on CPU core count
+
+- Create `ResultAggregator` to merge issue lists from subprocesses into a single thread-safe collection
+
+- Verification: Run linter on a directory of 100+ files and ensure no files are skipped or double-counted.
+
+- _Requirements: 3_
+
+
+- [ ] F4-T1.2 Implement Exit Code Management logic
+
+- Create `src/usecases/exit_manager.py`
+
+- Define `ExitCodeRegistry` enum (Success=0, ErrorsFound=1, SystemError=2)
+
+- Implement `calculate_exit_code(results, config)` function
+
+- Logic: Scan result list for severity='Error'; if count > 0, return 1
+
+- Add support for 'fail-on-warnings' configuration toggle
+
+- Verification: Unit test with mocked result sets containing mixed severities.
 
 - _Requirements: 1_
 
 
-- [ ] F4-T1.2 Implement Machine-Readable Reporters
 
-- Create src/usecases/reports/base_reporter.ts defining the Reporter interface.
+- [ ] F4-T2. Checkpoint: Core Engine Validation
 
-- Implement JSONReporter in src/adapters/reporters/json_reporter.ts.
+- [ ] F4-T2.1 Property Test: Execution Determinism and Exit Codes
 
-- Implement JUnitReporter in src/adapters/reporters/junit_reporter.ts using an XML builder.
+- Create `tests/properties/test_execution_engine.py`
 
-- Verification: Generate reports from dummy data and validate against JUnit XSD.
+- Implement property-based test: Property 'Concurrency Determinism'
+
+- Use Hypotheses or similar to generate random file sets and verify that SequentialRunner(F) == ParallelRunner(F)
+
+- Implement property-based test: Property 'Standardized Exit Invariant'
+
+- Assert ExitCode == 1 if any Error severity issue exists in the result set.
+
+- _Requirements: 1, 3_
+
+
+
+- [ ] F4-T3. Output Adapters & Reporting
+
+- [ ] F4-T3.1 Implement Machine-Readable Reporters
+
+- Create `src/adapters/reporters.py`
+
+- Implement `JSONReporter(BaseReporter)` class using standard `json` lib
+
+- Ensure fields: 'summary' (stats), 'files' (violation list), 'timestamp' (ISO 8601)
+
+- Implement `JUnitReporter(BaseReporter)` for XML output compatible with CI tools
+
+- Verification: Validate generated JSON against a schema and ensure it parses with standard CLI tools like `jq`.
 
 - _Requirements: 2_
 
 
+- [ ] F4-T3.2 Implement Static CI Log Formatting
 
-- [ ] F4-T2. Checkpoint 1: Core Reliability
+- Update `src/adapters/reporters.py` with `ConsoleReporter`
 
-- [ ] F4-T2.1 Checkpoint: Domain Logic and Schema Validation
+- Use ANSI escape codes for color-coding (Red for Errors, Yellow for Warnings)
 
-- Execute 'npm test' on newly created domain modules.
+- Implement static layout mode for CI (detecting TTY and disabling clearing characters/spinners)
 
-- Run a schema validation script on generated JUnit XML output.
+- Format: [File:Line:Col] [Severity] [Message] [RuleID]
 
+- Verification: Pipe output to `cat -e` to verify no interactive control characters are present in CI mode.
 
-
-- [ ] F4-T3. Execution and Orchestration
-
-- [ ] F4-T3.1 Build Parallel Execution Engine
-
-- Create src/adapters/parallel_engine.ts using Node.js worker_threads.
-
-- Implement a task-splitting algorithm to partition file lists among available CPU cores.
-
-- Verification: Measure wall-clock time for 200 dummy files vs sequential execution.
-
-- _Requirements: 3_
-
-
-- [ ] F4-T3.2 Orchestrate Quality Gate Use Case
-
-- Create src/usecases/quality_gate.ts as the primary entry point.
-
-- Integrate the ParallelEngine with the Reporter selection logic.
-
-- Ensure the process.exit() call is wrapped to use the Exit Code Registry.
-
-- _Requirements: 1, 2_
+- _Requirements: 4_
 
 
 
-- [ ] F4-T4. Optimization and Final Validation
+- [ ] F4-T4. Final Integration Checkpoint
 
-- [ ] F4-T4.1 Add Incremental Change Detector (Optional) *
+- [ ] F4-T4.1 Final End-to-End Integration Checkpoint
 
-- Create src/infrastructure/incremental_cache.ts to store file hashes and previous lint results.
+- Create `tests/integration/test_pipeline_integration.py`
 
-- Implement logic to skip files in ParallelEngine if their hash matches the cache.
+- Execute full linter run on a test project
 
-- Verification: Verify that subsequent runs on unchanged files take < 10% of the initial run time.
+- Assert JSON report is written to disk and is valid
 
-- _Requirements: 3_
+- Assert Exit Code is propagated to the shell correctly
 
+- Assert CI logs contain expected ANSI color sequences
 
-- [ ] F4-T4.2 Property-Based Performance and Logic Validation
+- Verification: Run `echo $?` after a failed lint run to confirm it returns 1.
 
-- Implement property test 'Parallel Performance Benefit' to ensure N > 100 files run faster in parallel.
-
-- Implement property test 'Deterministic Exit Codes' by simulating threshold breaches.
-
-
-
-- [ ] F4-T5. Checkpoint 2: Integration Complete
-
-- [ ] F4-T5.1 Final Quality Gate Integration Check
-
-- Run the full suite of integration tests.
-
-- Verify that a 'fail-on' breach returns exit code 1 in a shell environment.
-
-- _Requirements: 1, 2, 3_
+- _Requirements: 1, 2, 4_
 
 
 
@@ -121,11 +132,5 @@ Phase 1 and 2 establish the reliability of the quality gate by standardizing exi
 
 
 
-- Tasks marked with (*) are optional optimizations for very large monorepos.
-
-- Traceability is maintained by mapping all sub-tasks to Requirement IDs (e.g., E4, E8) and Correctness Properties (e.g., P1).
-
-- Ordering follows a 'domain-first' approach to ensure the core logic and exit code definitions are stable before infrastructure (caching) or orchestration (CI runner) is built.
-
-- Backward compatibility: The CLI will default to human-readable output and sequential execution unless flags are provided.
+- Tasks marked with (*) are optional optimizations (e.g., specific JUnit extensions). All tasks reference requirements to ensure traceability from stakeholder needs to code. Strict ordering ensures that core execution logic (Parallelism) is established before the reporting layers (JSON/JUnit) to ensure all data captured by the runner is accurately reflected in reports. Backward compatibility is maintained by defaulting to sequential execution if core count/configuration is not specified.
 

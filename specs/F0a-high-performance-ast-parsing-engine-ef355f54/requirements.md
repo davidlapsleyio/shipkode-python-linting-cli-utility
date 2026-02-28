@@ -8,7 +8,7 @@
 
 
 
-The High-Performance AST Parsing Engine serves as the core analytical backbone of Hyper-Lint, responsible for transforming raw Python source code into a structured Abstract Syntax Tree (AST) to enable deep inspection. Current linting tools often suffer from linear processing bottlenecks and shallow analysis that misses critical context. This feature achieves rapid, high-fidelity code analysis by implementing an engine capable of identifying PEP 8 violations, logical errors, and security flaws through a comprehensive node-traversal system. By optimizing for speed and scale, the engine ensures that even massive codebases can be processed efficiently, providing the necessary data for the Rich TUI to visualize vulnerabilities and style issues with precision.
+The High-Performance AST Parsing Engine (F0a) serves as the core analytical backbone of the Hyper-Lint system. Its primary purpose is to transform raw Python source code into a structured Abstract Syntax Tree (AST) to facilitate deep static analysis [E3]. By implementing a high-speed, parallelized parsing architecture, the engine enables the identification of PEP 8 violations, logical defects, and security vulnerabilities across massive codebases without the performance bottlenecks typical of legacy tools [E6][E8]. This engine provides the foundational data required for the system's rich visual reporting and CI/CD integration, ensuring that complex code structures are mapped accurately to their physical file locations for instantaneous developer feedback [E16][E18].
 
 
 
@@ -18,35 +18,12 @@ The High-Performance AST Parsing Engine serves as the core analytical backbone o
 
 
 
-### Requirement 1: Multidimensional Code Analysis
+### Requirement 1: Structural Analysis and Detection Engine
 
 
 
 
-**User Story:** As a DevOps/Platform Engineer, I want the parsing engine to scan Python code for PEP 8 compliance, logical errors, and security vulnerabilities [E3][E6], so that I can enforce high organizational quality and security standards [E7].
-
-
-
-
-#### Acceptance Criteria
-
-
-
-
-1. WHEN the engine encounters a Python source file, THE engine SHALL generate a comprehensive Abstract Syntax Tree (AST) to identify logical code errors [E3][E6].
-
-2. IF a node in the AST violates PEP 8 standards, THEN THE engine SHALL flag the node for style compliance reporting [E3][E6].
-
-3. WHEN traversing the AST, THE engine SHALL identify patterns matching known security vulnerabilities [E3][E6].
-
-
-
-### Requirement 2: Parallel and Incremental Parsing Engine
-
-
-
-
-**User Story:** As a DevOps/Platform Engineer, I want an engine that supports parallel processing and incremental linting [E8], so that I can minimize Developer Idle Time during large-scale CI/CD builds [E7].
+**User Story:** As an Aesthetics-Driven Developer, I want a linter that works on my Python code [E1] and identifies logical errors and security risks [E3][E6], so that I can maintain code quality and safety.
 
 
 
@@ -56,20 +33,20 @@ The High-Performance AST Parsing Engine serves as the core analytical backbone o
 
 
 
-1. WHEN the engine is executed on a multi-core system, THE engine SHALL distribute the AST parsing tasks across parallel processes [E8].
+1. WHEN the engine encounters a Python source file, THE system SHALL generate a complete Abstract Syntax Tree (AST) representing all logical nodes [E3].
 
-2. IF a file has not been modified since the previous scan, THEN THE engine SHALL utilize incremental linting logic to skip re-parsing [E8].
+2. IF the engine identifies a node violating PEP 8 standards, THEN it SHALL flag the node for the style reporting module [E6].
 
-3. WHEN processing large codebases, THE engine SHALL maintain performance scales suitable for CI/CD pipeline integration [E4][E7][E8].
-
-
-
-### Requirement 3: AST Node Localization and Metadata Extraction
+3. IF the engine identifies a node representing a known security vulnerability, THEN it SHALL flag the node for the security reporting module [E3][E6].
 
 
 
+### Requirement 2: Scalable Parallel Parsing and Incremental Scanning
 
-**User Story:** As an Aesthetics-Driven Developer, I want the engine to provide visual highlighting of specific code lines where errors occur [E16], so that I can identify and fix issues instantly without leaving my terminal [E5][E13].
+
+
+
+**User Story:** As a DevOps/Platform Engineer, I want the utility to support incremental linting and parallel processing [E8], so that I can ensure high performance even on the largest codebases [E8].
 
 
 
@@ -79,11 +56,34 @@ The High-Performance AST Parsing Engine serves as the core analytical backbone o
 
 
 
-1. WHEN a violation is detected, THE engine SHALL capture the exact line number and column offset of the offending AST node [E16].
+1. WHEN scanning a codebase, THE engine SHALL utilize parallel processing to distribute file parsing across available multi-core build agents [E8].
 
-2. IF an error is identified, THEN THE engine SHALL extract the source code snippet associated with the node for visual highlighting in the TUI [E16].
+2. IF a file has not been modified since the previous scan, THEN the engine SHALL utilize incremental linting to bypass re-parsing of that file [E8].
 
-3. WHEN analysis is complete, THE engine SHALL categorize findings into Security, Style, and Syntax types for the summary report [E15].
+3. WHEN executing in a CI/CD environment, THE engine SHALL process individual files or entire directories as specified by the pipeline configuration [E4][E7].
+
+
+
+### Requirement 3: High-Fidelity Node Mapping for Rich UI
+
+
+
+
+**User Story:** As an Aesthetics-Driven Developer, I want my linter results to include visual highlighting of specific lines where errors occur [E16][E20], so that I can fix issues instantly within the terminal [E5][E13].
+
+
+
+
+#### Acceptance Criteria
+
+
+
+
+1. WHEN a violation is discovered, THE engine SHALL record the exact line number and character offset of the offending Python source code [E16].
+
+2. THE engine SHALL provide the AST node metadata required to render color-coded source code snippets in the TUI [E14][E18][E20].
+
+3. IF a syntax error is detected during parsing, THEN the engine SHALL categorize the error as 'Syntax' for the summary report table [E15].
 
 
 

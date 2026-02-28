@@ -8,9 +8,9 @@
 
 
 
-The implementation follows a domain-driven approach, starting with the core data models and rule definitions (Domain), followed by the logic for running these rules (Use Cases), the integration with external scanning tools (Adapters), and finally the presentation layer (Rich TUI). This sequence ensures that the engine can process results independently of how they are gathered or displayed.
+The implementation strategy follows a domain-driven approach, prioritizing the core data models and rule interfaces before building the high-performance execution engine and UI. We will first define the 'Issue' and 'Report' domain objects to ensure a consistent contract between the engine and the adapters. This is followed by implementing the specific PEP 8 and Security rule logic, then the parallelized engine, and finally the rich TUI reporter.
 
-The strategy prioritizes the 'Security' and 'Logical' detection capabilities early in the development cycle to satisfy high-risk requirements before polishing the aesthetic reporting. By decoupling the Rule Execution Engine from the External Linter Bridge, we allow for mocking external tool outputs during initial development and testing.
+The rationale for this ordering is to establish 'Aggregation Integrity' early. By defining how issues are collected and summed before implementing parallel workers, we reduce the risk of bug propagation in the multi-processing logic. Incremental processing is implemented last as an optimization layer over a stable, functional linting engine.
 
 
 
@@ -20,114 +20,111 @@ The strategy prioritizes the 'Security' and 'Logical' detection capabilities ear
 
 
 
-- [ ] F1-T1. Phase 1: Domain Models and Core Interfaces
+- [ ] F1-T1. Domain Model Definition
 
-- [ ] F1-T1.1 Define Domain Models and Enums
+- [ ] F1-T1.1 Define Domain Issue and Report Models
 
-- Create `src/domain/enums.py` containing `ViolationCategory` (STYLE, LOGIC, SECURITY) and `Severity` (LOW, MEDIUM, HIGH, CRITICAL).
+- Create `src/domain/models.py`
 
-- Define `Violation` dataclass in `src/domain/models.py` with fields: `id`, `category`, `message`, `line_number`, `column`, and `file_path`.
+- Define `Issue` dataclass with fields: rule_id, line, column, message, severity (Enum: STYLE, SECURITY, LOGIC).
 
-- Ensure `Severity` implements comparison logic to support prioritization.
+- Define `Report` dataclass with dictionary for aggregation and summary statistics.
 
-- _Requirements: 4_
-
-
-- [ ] F1-T1.2 Define Adapter Interfaces
-
-- Create `src/domain/interfaces.py`.
-
-- Define `AbstractLinter` interface with an `execute(source_path: Path) -> List[Violation]` method.
-
-- Define `ReportGenerator` interface for the TUI output.
-
-- _Requirements: 1, 2, 3_
+- _Requirements: 1, 2_
 
 
+- [ ] F1-T1.2 Define Rule and Reporter Interfaces
 
-- [ ] F1-T2. Phase 2: Rule Engines and Use Cases
+- Create `src/domain/interfaces.py`
 
-- [ ] F1-T2.1 Implement Rule Execution Engine
+- Define `BaseRule` abstract class with a `check(path: Path) -> List[Issue]` method.
 
-- Implement `RuleExecutionEngine` class.
+- Define `IReporter` interface for UI output.
 
-- Add `run_all(paths: List[Path])` method that iterates through registered adapters.
-
-- Implement error handling for file access and external process timeouts.
-
-- _Requirements: 2_
-
-
-- [ ] F1-T2.2 Implement Report Aggregator with Prioritization
-
-- Implement `ReportAggregator` in `src/usecases/report_aggregator.py`.
-
-- Add logic to group violations by `ViolationCategory`.
-
-- Implement sorting logic where SECURITY and LOGIC violations always precede STYLE.
-
-- _Requirements: 4_
+- _Requirements: 1, 2_
 
 
 
-- [ ] F1-T3. Phase 3: External Linter Adapters
+- [ ] F1-T2. Rule Suite Implementation
 
-- [ ] F1-T3.1 Implement PEP 8 Bridge
+- [ ] F1-T2.1 Implement PEP 8 Governance Rules
 
-- Implement `ExternalLinterBridge` in `src/adapters/linter_bridge.py`.
+- Implement `PEP8StyleRule` in `src/adapters/rules/suite.py` using the `pycodestyle` or `flake8` internal APIs.
 
-- Integrate `flake8` or `pycodestyle` for PEP 8 compliance.
+- Ensure violation SEVERITY_STYLE is correctly mapped.
 
-- Map external error codes to `ViolationCategory.STYLE`.
+- Verification: Create a sample file with E302 violations and run unit tests.
 
 - _Requirements: 1_
 
 
-- [ ] F1-T3.2 Implement Security and Logic Bridge
+- [ ] F1-T2.2 Implement Security and Logic Rules
 
-- Integrate `bandit` or `safety` within the bridge for security scanning.
+- Implement `SecurityVulnerabilityRule` using `bandit` or regex-based pattern matching for insecure code (e.g., eval(), subprocess.shell=True).
 
-- Map findings like `eval()` usage to `ViolationCategory.SECURITY`.
+- Implement `LogicalErrorRule` for common anti-patterns like broad except blocks.
 
-- Integrate `pyflakes` or `mypy` (static mode) for logic error detection.
-
-- _Requirements: 2Attribute, 3_
+- _Requirements: 2_
 
 
 
-- [ ] F1-T4. Phase 4: Checkpoint & Property Verification
+- [ ] F1-T3. Engine and Use Case Development
 
-- [ ] F1-T4.1 Property Test: Severity Prioritization
+- [ ] F1-T3.1 Implement Parallel Linting Engine
 
-- Create `test_prioritization.py` to verify that SECURITY items appear at the top of lists regardless of discovery order.
+- Create `src/usecases/engine.py`.
 
+- Implement `LintingEngine` that accepts a list of rules and file paths.
 
-- [ ] F1-T4.2 Property Test: Security Detection Coverage
+- Use `concurrent.futures.ProcessPoolExecutor` for parallel execution.
 
-- Create `test_security_coverage.py` using a suite of 'vulnerable' python scripts.
-
-- Assert that `eval()` and `subprocess.shell=True` trigger violations.
-
-
-- [ ] F1-T4.3 Property Test: PEP 8 Enforcement
-
-- Create `test_style_compliance.py` with misindented code.
-
-- Assert that the Bridge correctly identifies and reports these as STYLE violations.
-
-
-
-- [ ] F1-T5. Phase 5: Presentation Layer
-
-- [ ] F1-T5.1 Implement Rich TUI Reporting
-
-- Use `rich.console` and `rich.table` to build the UI.
-
-- Color code categories: Red for Security, Yellow for Logic, Blue for Style.
-
-- Display a summary table showing count of violations per category.
+- Implement result aggregation logic.
 
 - _Requirements: 4_
+
+
+- [ ] F1-T3.2 Add Incremental Linting Support (*)
+
+- Implement file-hashing logic in `src/usecases/engine.py` to track `mtime` and content hashes.
+
+- Store state in a local `.linter_cache` file.
+
+- Logic: Skip `check()` call if file hash matches the cache entry.
+
+- _Requirements: 4_
+
+
+
+- [ ] F1-T4. Checkpoint: Core Logic Verification
+
+- [ ] F1-T4.1 Execute Correctness Property Tests
+
+- Run property tests for 'Aggregation Integrity' by comparing single-threaded vs multi-threaded results.
+
+- Run property tests for 'Incremental Efficiency' by checking file access counts on repeated runs.
+
+
+
+- [ ] F1-T5. TUI and Reporting UI
+
+- [ ] F1-T5.1 Implement Rich TUI Reporter
+
+- Create `src/adapters/ui/tui.py`.
+
+- Integrate `rich` library for table rendering and progress bars.
+
+- Implement color-coding based on severity (Red for Security, Yellow for Style).
+
+- _Requirements: 3_
+
+
+- [ ] F1-T5.2 Final CLI Integration
+
+- Finalize `src/main.py` to wire up the Engine, Suite, and TUI.
+
+- Ensure the summary table displays total counts for E-codes and security levels.
+
+- _Requirements: 3_
 
 
 
@@ -137,11 +134,5 @@ The strategy prioritizes the 'Security' and 'Logical' detection capabilities ear
 
 
 
-- Tasks marked with (*) are optional optimizations for the Rich UI.
-
-- Traceability: Requirement IDs are linked to sub-tasks to ensure every user story and edge case is accounted for.
-
-- Ordering Constraints: Data models must be established before the Bridge can map external outputs to internal types.
-
-- Compatibility: The Linter Bridge maintains a generic interface so that underlying tools (flake8, bandit) can be swapped without affecting the Rule Engine.
+- Tasks marked with (*) are optional optimizations for CI/CD environments. Traceability is maintained via requirement_refs to ensure every user story is addressed. The domain-first ordering ensures that the data structures for 'Issues' and 'Reports' are stable before the parallel engine or UI logic is built. Backward compatibility for existing rule definitions is guaranteed by the interface-based design in the Adapter layer.
 

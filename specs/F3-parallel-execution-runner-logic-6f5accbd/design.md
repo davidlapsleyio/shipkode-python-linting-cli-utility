@@ -8,9 +8,9 @@
 
 
 
-The Parallel Execution Runner (F3) adopts a 'Fan-Out/Fan-In' architecture designed to maximize resource utilization on multi-core systems. The core philosophy is to minimize wasted cycles through two distinct strategies: first, by narrowing the work set via Incremental Analysis (hashing) to only process changed files; and second, by distributing the remaining tasks across a pool of isolated workers. This approach ensures that performance scales linearly with hardware availability, targeting the sub-60-second validation goal for large repositories.
+The F3 feature focuses on transforming the linter from a single-threaded sequential tool into a high-performance parallel engine. The core strategy employs a Process-based concurrency model using Python's 'concurrent.futures', which avoids GIL limitations and maximizes CPU utilization across all available cores. This is essential for maintaining high throughput in CI/CD environments where massive repositories must be validated within minutes.
 
-Architecturally, the system transitions from a single-threaded loop to a decoupled orchestration model. The domain logic (rules) remains pure and agnostic of execution context. The 'Execution Orchestrer' manages the lifecycle, while 'Adapters' handle the complexities of worker communication and file system caching. This separation ensures that the incremental logic can be tested in isolation from the multi-threading logic, promoting a robust and maintainable codebase as requirements for larger scale projects evolve.
+The design introduces an incremental processing layer that uses SHA-256 content hashing to determine if a file needs re-evaluation. While the rule logic remains unchanged, the execution flow is refactored into a 'Scatter-Gather' architecture. This approach ensures that the runner remains decoupled from the specific rules it executes, allowing for future rule additions without modifying the parallelization logic. Incremental state is persisted locally, enabling fast iterative 'lint-on-save' workflows for developers.
 
 
 
@@ -22,29 +22,28 @@ Architecturally, the system transitions from a single-threaded loop to a decoupl
 
 ```mermaid
 graph TD
-    subgraph UseCases [Use Cases Layer]
-        EX[Execution Orchestrer]
-        IA[Incremental Analyzer]
+    subgraph "Adapters Layer"
+        FS[FileSystem Adapter]
+        CC[Cache Controller]
     end
 
-    subgraph Adapters [Adapters Layer]
-        WP[Worker Pool Manager]
-        FS[File System Scanner]
-        CS[Cache Store]
+    subgraph "Use Cases Layer"
+        Runner[Parallel Runner]
+        Sched[Task Scheduler]
+        Dedupe[Result Aggregator]
     end
 
-    subgraph Domain [Domain Layer]
-        RT[Result Transfer Object]
-        FT[File Task Definition]
+    subgraph "Domain Layer"
+        Job[Lint Job Entity]
+        State[File Hash State]
     end
 
-    EX --> IA
-    EX --> WP
-    IA --> FS
-    IA --> CS
-    WP --> RT
-    WP --> FT
-    RT --> EX
+    FS --> Runner
+    Runner --> Sched
+    Sched --> Job
+    Runner --> CC
+    CC --> State
+    Runner --> Dedupe
 ```
 
 
@@ -55,128 +54,114 @@ graph TD
 
 
 
-### 1. Execution Orchestrer (`usecases`)
+### 1. Parallel Runner Orchestrator (`usecases`)
 
 
 
 
-**Path:** `src/usecases/execution_orchestrator.ts`
+**Path:** `src/usecases/parallel_runner.py`
 
 | Responsibility | Description |
 |---|---|
-| Coordinating the flow between incremental analysis and parallel execution | |
-| Partitioning file lists into balanced worker tasks | |
-| Aggregating partial results from workers into a unified report | |
+| Orchestrate the end-to-end linting execution flow | |
+| Filter files based on incremental cache hits | |
+| Coordinate worker pool allocation based on CPU core count | |
+| Aggregate individual file reports into a global result set | |
 
 
 ```python
-interface ExecutionRequest {
-  files: string[];
-  rules: Rule[];
-  parallelism: number;
-}
+class IRunner(Protocol):
+    async def run_parallel(self, paths: List[Path], max_workers: int) -> Summary:
+        \"\"\"Executes linting rules across multiple cores.\"\"\"
 
-class ExecutionOrchestrator {
-  async execute(req: ExecutionRequest): Promise<Report> {
-    const changedFiles = await this.analyzer.getChangedFiles(req.files);
-    const tasks = this.partitionWork(changedFiles, req.parallelism);
-    const results = await this.workerPool.run(tasks);
-    return this.aggregator.combine(results);
-  }
-}
+class ParallelRunner(IRunner):
+    def __init__(self, scheduler: IScheduler, cache: ICache):
+        self.scheduler = scheduler
+        self.cache = cache
 ```
 
 
 
 
-### 2. Incremental Analyzer (`usecases`)
+### 2. Task Scheduler (`usecases`)
 
 
 
 
-**Path:** `src/usecases/incremental_analyzer.ts`
+**Path:** `src/usecases/scheduler.py`
 
 | Responsibility | Description |
 |---|---|
-| Computing file hashes for the current workspace | |
-| Comparing current state against cached previous state | |
-| Pruning the task list to include only modified or new files | |
+| Manage ProcessPoolExecutor lifecycle | |
+| Chunk file lists to optimize inter-process communication (IPC) | |
+| Handle worker timeout and resource cleanup | |
 
 
 ```python
-interface FileHash {
-  path: string;
-  hash: string;
-}
+class TaskScheduler:
+    def __init__(self, workers: int = None):
+        self.executor = ProcessPoolExecutor(max_workers=workers)
 
-class IncrementalAnalyzer {
-  async filterFiles(files: string[]): Promise<string[]> {
-    const currentHashes = await this.fs.computeHashes(files);
-    const previousHashes = await this.cache.getLatestHashes();
-    return files.filter(f => currentHashes[f] !== previousHashes[f]);
-  }
-}
+    async def schedule_batch(self, tasks: List[LintTask]) -> List[RuleResult]:
+        \"\"\"Dispatches tasks to the process pool and awaits results.\"\"\"
 ```
 
 
 
 
-### 3. Worker Pool Manager (`adapters`)
+### 3. Incremental Cache Controller (`adapters`)
 
 
 
 
-**Path:** `src/adapters/worker_pool.ts`
+**Path:** `src/adapters/cache_controller.py`
 
 | Responsibility | Description |
 |---|---|
-| Managing process/thread lifecycle and resource limits | |
-| Serializing and deserializing tasks and results across boundaries | |
-| Monitoring worker health and performance metrics | |
+| Calculate file content hashes (SHA-256) | |
+| Maintain a persistent state of 'clean' files | |
+| Invalidate cache entries when rulesets change | |
 
 
 ```python
-interface WorkerTask {
-  files: string[];
-  ruleIds: string[];
-}
+class CacheController:
+    def is_dirty(self, file_path: Path) -> bool:
+        \"\"\"Checks if the file hash has changed since last record.\"\"\"
 
-class WorkerPool {
-  async runTasks(tasks: WorkerTask[]): Promise<LintResult[]> {
-    return Promise.all(tasks.map(t => this.dispatchToIdleWorker(t)));
-  }
-}
+    def update_cache(self, file_path: Path, results: List[RuleResult]):
+        \"\"\"Saves the new hash and result state for a file.\"\"\"
 ```
 
 
 
 
-### 4. Result Aggregator (`usecases`)
+### 4. Lint Job Domain Entity (`domain`)
 
 
 
 
-**Path:** `src/usecases/result_aggregator.ts`
+**Path:** `src/domain/job.py`
 
 | Responsibility | Description |
 |---|---|
-| Merging disparate result arrays into a single structure | |
-| Computing global health metrics (e.g., total error density) | |
-| Sorting results by severity and file path for consistent reporting | |
+| Represent a single file analysis task | |
+| Encapsulate linting result metadata | |
+| Provide an immutable structure for cross-process data transfer | |
 
 
 ```python
-class ResultAggregator {
-  merge(results: LintResult[][]): FinalReport {
-    const flat = results.flat();
-    return {
-      issues: this.sort(flat),
-      summary: this.calculateSummary(flat),
-      scannedCount: flat.length,
-      timestamp: new Date()
-    };
-  }
-}
+@dataclass(frozen=True)
+    class LintJob:
+        file_path: Path
+        file_content: str
+        rules: List[BaseRule]
+        
+    @dataclass(frozen=True)
+    class RuleResult:
+        rule_id: str
+        is_valid: bool
+        message: Optional[str]
+        location: Tuple[int, int]
 ```
 
 
@@ -202,36 +187,36 @@ No new data models are introduced unless specified in the component descriptions
 
 
 
-### Property F3-P1: Conservation of Results
+### Property F3-P1: Execution Determinism
 
 
 
 
-*For any execution, the final report's issue count must equal the sum of issues found by all individual workers for the unique set of changed files.*
+*For any file set F, the result of ParallelRunner(F) is identical to the result of SequentialRunner(F).*
 
-**Validates: Requirements 3**
-
-
-
-### Property F3-P2: Strict Incrementalism
+**Validates: Requirements 1.1, 1.3**
 
 
 
-
-*For any file F, if the hash of F matches the cached hash from the previous run, F shall not be processed by any worker in the parallel pool.*
-
-**Validates: Requirements 2**
-
-
-
-### Property F3-P3: Resource Boundary Adherence
+### Property F3-P2: Incremental Cache Integrity
 
 
 
 
-*For any machine with N available cores, the system must initialize no more than N-1 workers to prevent OS starvation while maximizing throughput.*
+*For any file f where hash(f)_t1 == hash(f)_t2 and ruleset_t1 == ruleset_t2, the ParallelRunner shall not execute rules on f at t2.*
 
-**Validates: Requirements 1**
+**Validates: Requirements 1.2**
+
+
+
+### Property F3-P3: Resource Boundedness
+
+
+
+
+*For any execution on a machine with N cores, the number of active worker processes shall not exceed N + 1.*
+
+**Validates: Requirements 1.1, 1.3**
 
 
 
@@ -242,9 +227,9 @@ No new data models are introduced unless specified in the component descriptions
 
 | Scenario | Handling |
 |---|---|
-| A worker process crashes due to an OOM or unexpected rule exception. | The Worker Pool Manager catches the exit code, logs the stack trace from the worker's STDERR, and the Orchestrator marks the specific file batch as 'Failed' in the report without crashing the entire run. |
-| The .lint-cache file is corrupted or unreadable. | The Incremental Analyzer defaults to a full scan (clean slate) to ensure safety, logging a warning about the cache corruption. |
-| Parallel execution hangs on a specific complex file/rule combination. | The Orchestrator implements a timeout per file; if a rule takes > 10s, it kills the task and reports a 'Performance Timeout' to the aggregator. |
+| Worker process crashes due to a specific malformed file or OOM. | The Task Scheduler catches the exception, logs it with the file path context, and marks the specific file as 'failed' in the summary while allowing other workers to continue. |
+| Incompatible cache version found on disk. | The runner detects the version mismatch, invalidates the entire local cache, and triggers a full clean run to ensure correctness. |
+| Filesystem permission error when reading/writing the .linter_cache. | The CacheController falls back to a clean run (treating all files as dirty) if the cache file is locked or unreadable. |
 
 
 
@@ -253,11 +238,12 @@ No new data models are introduced unless specified in the component descriptions
 
 
 
-The testing strategy focuses on concurrent correctness and performance benchmarking. We will use 'fast-check' for property-based testing to ensure that different interleavings of file tasks always produce the same aggregated report. Regression testing will involve existing linting test suites, now wrapped in the ExecutionOrchestrator to ensure functional parity with the sequential implementation.
+The testing strategy centers on 'Performance Parity' and 'Incremental Correctness'. 
 
-CI verification will include a 'Performance Gate' check using a simulated repo with 1000+ files to verify that the incremental logic results in a >80% reduction in execution time for small changes (Requirement 2). We will use the 'vitest' framework's multi-threading capabilities to simulate diverse core counts.
+1. Regression Testing: Existing rule tests will be executed through the ParallelRunner using a 'Sync-to-Parallel' wrapper to ensure that parallel execution doesn't change the outcome of any individual rule validation.
 
-Configuration:
-- Library: fast-check (property testing), vitest (unit/benchmarking)
-- Iterations: 100 iterations per property test
-- Tag Format: [F3-PARALLEL-CORRECTNESS] for worker integrity tests.
+2. CI Verification: Specialized benchmarks will run in the CI pipeline (using `pytest-benchmark`) to assert that execution time scales sub-linearly with the number of cores. The command `pytest tests/performance --benchmark-only` will be used.
+
+3. Property-Based Testing: Using the Hypothesis library, we will generate random file trees and verify that the results remain constant regardless of the 'max_workers' setting (1 to 16). We will also simulate 'file edits' by changing single bytes and verifying that the CacheController correctly identifies only those files as dirty.
+
+4. Configuration: Tests will use the `pytest-xdist` plugin for runner isolation and will be configured to run 50 iterations for each cache-state transition test to ensure no race conditions exist in the result aggregator.

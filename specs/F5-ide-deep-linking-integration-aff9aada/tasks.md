@@ -8,9 +8,9 @@
 
 
 
-The implementation strategy follows a 'Domain-first' then 'Adapter-extension' approach. We first define the core data models for URI schemes and coordinate mapping, ensuring that the link generation logic is decoupled from the terminal rendering logic. This prevents 'leaky abstractions' where terminal-specific escape codes bleed into the core logic.
+The implementation strategy follows a domain-first approach by defining the link-generation logic within the adapters before integrating it into the reporting infrastructure. Initially, we will implement an environment detection layer to distinguish between interactive terminals and CI/CD pipelines. This ensures we adhere to the CI Transparency Invariant early in the development cycle.
 
-The first phase focuses on the Link Generator adapter, creating a robust engine to translate file paths and coordinates into IDE-specific URIs (e.g., vscode://, pycharm://). Next, we refactor the existing Terminal Reporter to support 'pluggable' path decorators. This allows us to inject the OSC 8 hyperlink logic without refactoring the entire reporting loop. Finally, we implement property-based tests to ensure the generated escape sequences are valid and that coordinates are accurately aligned between the UI text and the hidden URI metadata.
+Following this, we will build a LinkProvider that leverages OSC 8 (Operating System Command) escape sequences. This provider will be responsible for transforming file paths and line numbers into clickable URIs. The final phase involves integrating this provider into the main reporting output, ensuring that users can jump directly to specific lines of code in their IDE while maintaining clean, link-free logs in non-interactive environments.
 
 
 
@@ -20,88 +20,91 @@ The first phase focuses on the Link Generator adapter, creating a robust engine 
 
 
 
-- [ ] F5-T1. Core Link Generation Logic
+- [ ] F5-T1. Foundation and Environment Logic
 
-- [ ] F5-T1.1 Implement IDE Link Generator adapter
+- [ ] F5-T1.1 Implement EnvironmentDetector
 
-- Create `src/adapters/link_generator.py`.
+- Create `src/infrastructure/env/detector.py`.
 
-- Implement `LinkGenerator` class with support for `vscode://`, `pycharm://`, and `file://` protocols.
+- Implement `EnvironmentDetector` class with `is_interactive()` method.
 
-- Add method `generate_link(path: str, line: int, col: int) -> str` that reads from an `IDE_PROTOCOL` environment variable.
+- Logic should check for `CI` environment variables and `sys.stdout.isatty()`.
 
-- Ensure proper URI encoding for file paths using `urllib.parse.quote`.
+- Verification: Ensure `is_interactive()` returns `False` when `CI=true` is set.
 
-- _Requirements: F5-3_
-
-
-- [ ] F5-T1.2 Create OSC 8 Escape Sequence Utilities
-
-- Add a `HyperlinkFormatter` utility in `src/adapters/terminal_utils.py`.
-
-- Implement OSC 8 sequence wrapper: `\033]8;;{uri}\033\\{text}\033]8;;\033\\`.
-
-- Include a toggle for `TERM_SUPPORT_OSC8` to allow for graceful degradation.
-
-- _Requirements: F5-1_
+- _Requirements: 3_
 
 
+- [ ] F5-T1.2 Develop OSC 8 LinkProvider
 
-- [ ] F5-T2. Adapter Integration and UI Enhancement
+- Create `src/adapters/links/link_provider.py`.
 
-- [ ] F5-T2.1 Enhance Terminal Reporter for Clickable Links
+- Implement `OSC8LinkProvider` class.
 
-- Open `src/adapters/terminal_reporter.py`.
+- Define `format_link(text: str, file_path: str, line: int)` method.
 
-- Identify the violation row rendering loop.
+- Implement the OSC 8 sequence pattern: `\033]8;;file://{host}{path}#L{line}\033\\{text}\033]8;;\033\\`.
 
-- Refactor path rendering to use the `LinkGenerator` to wrap the filename and coordinate text in OSC 8 sequences.
+- Verification: Use unit tests to check the raw string output of the linker.
 
-- Ensure the 'Summary Table' headers and rows are updated to pass file/line/col objects instead of pre-formatted strings.
-
-- _Requirements: F5-2_
-
-
-- [ ] F5-T2.2 Update Summary Table Metadata Rendering Logic
-
-- Update the summary table logic to include high-precision coordinates for Security, Style, and Syntax errors.
-
-- Ensure visual hierarchy is maintained as per Requirement 2.
-
-- _Requirements: F5-2_
+- _Requirements: 1, 2_
 
 
 
-- [ ] F5-T3,sub_tasks:[{description:. Checkpoint: Verify OSC 8 Output in Supported Terminal
+- [ ] F5-T2. Checkpoint: Environment and Linker Validation
 
-- Validate the integration and property adherence.
+- [ ] F5-T2.1 Property Test: CI Transparency Invariant
 
+- Create property-based test `test_ci_transparency` in `tests/test_links.py`.
 
-- [ ] F5-T3.2. Property-Based Verification Tests
-
-- Create `tests/test_link_integrity.py`.
-
-- Property Test: Verify that for a given violation, the line/col numbers in the URI match the line/col numbers in the visible text (Coordinate Precision).
-
-- Property Test: Verify that changing `IDE_PROTOCOL` env var changes the URI scheme prefix in output (Protocol Adherence).
-
-- Property Test: Verify that when OSC8 is disabled, no escape sequences starting with `\033]8` are present (Graceful Degradation).
+- Assert that for any input, if `EnvironmentDetector.is_interactive()` is false, `OSC8LinkProvider` returns the original text without escape sequences.
 
 
-- [ ] F5-T3.3. Manual E2E Validation
+- [ ] F5-T2.2 Property Test: Line-Jump Precision Verification
 
-- Run the linter on its own codebase.
+- Create unit test `test_line_jump_format`.
 
-- Manually click links in a supported terminal (e.g., iTerm2, VSCode Integrated Terminal, Alacritty) to confirm IDE focus switch.
-
-- _Requirements: F5-1_
+- Assert that the generated URI contains the exact numeric value passed as the 'line' argument.
 
 
-- [ ] F5-T3.4. Final Checkpoint
 
-- Verify zero regression in standard terminal output for non-supported environments.
+- [ ] F5-T3. UI Integration and Refinement
 
-- Confirm all tests pass.
+- [ ] F5-T3.1 Integrate Links into Terminal Report
+
+- Modify `src/adapters/reporting/terminal_report.py` (referenced as E9).
+
+- Inject `LinkProvider` into the report generation class.
+
+- Update the file-path rendering logic to wrap paths in the generated OSC 8 sequences.
+
+- Ensure absolute paths are resolved for the `file://` URI scheme.
+
+- _Requirements: 1, 2_
+
+
+- [ ] F5-T3.2 IDE-Specific Customization (*) *
+
+- Implement IDE-specific detection or configuration in `OSC8LinkProvider` (e.g., custom schemes like `vscode://file/{path}:{line}`).
+
+- Provide a fallback to the standard `file://` protocol.
+
+- _Requirements: 1, 2_
+
+
+
+- [ ] F5-T4. Checkpoint: Final Acceptance
+
+- [ ] F5-T4.1 End-to-End Verification
+
+- Run end-to-end integration tests on an interactive TTY.
+
+- Run tests in a simulated CI environment (setting `CI=true`).
+
+- Verify that terminal links are clickable in supported terminals (i.e., iTerm2, VS Code Terminal, Alacritty).
+
+- _Requirements: 1, 2, 3_
+
 
 
 
@@ -110,11 +113,11 @@ The first phase focuses on the Link Generator adapter, creating a robust engine 
 
 
 
-- Tasks marked with (*) are optional based on specific terminal emulator capabilities.
+- Tasks marked with (*) are optional extensions for specific IDEs beyond standard URI patterns.
 
-- Traceability is maintained by mapping every sub-task to its parent requirement (F5-R1/R2/R3).
+- Traceability: requirement_refs ensure every feature requirement maps to a concrete implementation step.
 
-- The 'Split-First' strategy is applied to the Terminal Reporter to ensure the new logic doesn't bloat the existing reporting engine.
+- Ordering Constraint: The EnvironmentDetector must be implemented before the LinkProvider to ensure the 'CI Transparency' property is not violated during integration.
 
-- Backward compatibility: The 'Graceful Degradation' property ensures that older terminals see standard text paths if the OSC 8 toggle is disabled or unsupported.
+- Backward Compatibility: The default behavior of the reporter must fall back to standard text formatting if terminal links are disabled or unsupported.
 

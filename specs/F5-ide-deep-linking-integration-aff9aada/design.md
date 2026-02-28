@@ -8,9 +8,9 @@
 
 
 
-The IDE Deep-Linking Integration follows a strategy of 'Invisible Enhancement'. The core linting logic and internal data models remain largely untouched, while the presentation layer is upgraded to emit OSC 8 escape sequences. This approach allows users in modern terminals (iTerm2, VS Code, Alacritty) to click file paths and jump directly to the code, while maintaining backward compatibility for legacy environments that will simply see standard text.
+The IDE Deep-Linking Integration focuses on enhancing the developer experience by transforming static file paths into interactive elements within the terminal. The core strategy utilizes the OSC 8 (Office Standard Command 8) terminal sequence, which allows for 'hyperlinking' text similarly to HTML but within a CLI context. This approach keeps the visual output clean—displaying only the file path—while embedding the metadata needed for IDE navigation.
 
-The strategy centers on the 'Link Generator' adapter, which translates internal violation coordinates into URI schemes like 'vscode://' or 'cursor://'. By modularizing the URI construction, we support various IDEs via configuration. The existing summary table remains the visual anchor, but its 'Location' column becomes an interactive gateway to the code, directly addressing the need for an aesthetics-driven, efficient workflow.
+Architecturally, we introduce a LinkProvider adapter that sits between the Report Generator and the Output Stream. This provider is environment-aware: it detects if the tool is running in a local interactive terminal (like VSCode, iTerm2, or IntelliJ) or in a headless CI/CD environment. In CI environments, the system automatically degrades to plain text to prevent log corruption, while in local environments, it constructs IDE-specific URIs (e.g., vscode://) to enable line-jumping. The existing reporting logic remains unchanged, as the linking logic is injected as a formatting decorator.
 
 
 
@@ -22,29 +22,24 @@ The strategy centers on the 'Link Generator' adapter, which translates internal 
 
 ```mermaid
 graph TD
-    subgraph "Infrastructure Layer"
-        Config["Config Loader<br/>(Reads IDE_PROTOCOL)"]
+    subgraph UseCases
+        UC[Report Generator] --> LP[Link Processor]
     end
 
-    subgraph "Adapter Layer"
-        Term["Terminal Reporter<br/>(Generates ANSI/OSC 8)"]
-        LinkGen["Link Generator<br/>(URI Scheme Logic)"]
+    subgraph Adapters
+        LP --> DF[Default Link Formatter]
+        LP --> IF[IDE Link Formatter]
+        IF --> VS[VSCode Scheme]
+        IF --> IJ[IntelliJ Scheme]
+        DR[Detection Registry]
     end
 
-    subgraph "Usecases Layer"
-        ReportGen["Report Generator<br/>(Orchestrate Summary)"]
+    subgraph Infrastructure
+        T[Terminal Router] -- Interactive? --> LP
+        T -- CI Detect --> DR
     end
 
-    subgraph "Domain Layer"
-        Violation["Violation Model<br/>(File, Line, Col)"]
-        EditorLink["Editor Link VO<br/>(Encapsulated URI)"]
-    end
-
-    ReportGen --> Violation
-    ReportGen --> LinkGen
-    LinkGen --> EditorLink
-    Term --> LinkGen
-    Term --> Config
+    LP -- Render --> STDOUT[OSC 8 Clickable Link]
 ```
 
 
@@ -55,56 +50,60 @@ graph TD
 
 
 
-### 1. IDE Link Generator (`adapters`)
+### 1. LinkProvider (`adapters`)
 
 
 
 
-**Path:** `src/adapters/link_generator.py`
+**Path:** `src/adapters/links/link_provider.py`
 
 | Responsibility | Description |
 |---|---|
-| Map file paths and coordinates to IDE-compatible URI schemes | |
-| Construct OSC 8 escape sequences for terminal emulators | |
-| Sanitize file paths for URI safety | |
+| Detect terminal interactive capabilities | |
+| Map file paths to IDE-specific URI schemes | |
+| Construct OSC 8 escape sequences for terminal output | |
+| Fallback to plain text for non-interactive environments | |
 
 
 ```python
-class LinkGenerator:
-    def generate_osc8_link(self, path: str, line: int, col: int) -> str:
-        uri = self._build_ide_uri(path, line, col)
-        return f"\033]8;;{uri}\033\\{path}:{line}:{col}\033]8;;\033\\"
-    
-    def _build_ide_uri(self, path: str, line: int, col: int) -> str:
-        # Example: vscode://file/{abs_path}:{line}:{col}
-        ...
+class ILinkFormatter(Protocol):
+    def format(self, path: str, line: int, col: int) -> str: ...
+
+class LinkProvider:
+    def __init__(self, formatter: ILinkFormatter):
+        self._formatter = formatter
+
+    def wrap(self, text: str, path: str, line: int = 1) -> str:
+        uri = self._formatter.format(path, line, 0)
+        return f"\033]8;;{uri}\033\\{text}\033]8;;\033\\"
 ```
 
 
 
 
-### 2. Enhanced Terminal Reporter (`adapters`)
+### 2. EnvironmentDetector (`infrastructure`)
 
 
 
 
-**Path:** `src/adapters/terminal_reporter.py`
+**Path:** `src/infrastructure/env/detector.py`
 
 | Responsibility | Description |
 |---|---|
-| Render the final color-coded summary table | |
-| Inject OSC 8 links into the 'Location' column | |
-| Maintain visual layout across different terminal widths | |
+| Identify if the process is running in a CI environment | |
+| Determine the host IDE if executed within an integrated terminal | |
+| Verify TTY availability for interactive link rendering | |
 
 
 ```python
-class TerminalReporter:
-    def render_summary_table(self, violations: List[Violation]):
-        table = Table(title="Linting Violations")
-        for v in violations:
-            link = self.link_gen.generate_osc8_link(v.path, v.line, v.col)
-            table.add_row(v.category, link, v.message)
-        self.console.print(table)
+class TerminalEnv:
+    is_interactive: bool
+    supports_osc8: bool
+    detected_ide: Optional[str]
+
+def detect_environment() -> TerminalEnv:
+    # Logic to check CI env vars and TTY status
+    ...
 ```
 
 
@@ -130,36 +129,25 @@ No new data models are introduced unless specified in the component descriptions
 
 
 
-### Property F5-P1: Protocol Adherence
+### Property F5-P1: CI Transparency Invariant
 
 
 
 
-*For any generated terminal output string, the OSC 8 escape sequence must contain a URI scheme matching the configured IDE_PROTOCOL environment variable.*
+*For any output generated in a non-interactive environment (CI=true), the resulting string must contain zero OSC 8 escape sequences.*
 
-**Validates: Requirements 3**
-
-
-
-### Property F5-P2: Coordinate Precision
+**Validates: Requirements 1.3**
 
 
 
-
-*For any violation reported in the summary table, the coordinate metadata (line:col) in the OSC 8 URI must exactly match the displayed text and the underlying violation data.*
-
-**Validates: Requirements 2**
-
-
-
-### Property F5-P3: Graceful Degradation
+### Property F5-P2: Line-Jump Precision
 
 
 
 
-*For any environment where OSC 8 is not supported, the terminal output must remain human-readable and display the plain-text file coordinates.*
+*For any rendered link in a supported IDE terminal, the OSC 8 URI must include the exact line number provided by the security auditor.*
 
-**Validates: Requirements 1**
+**Validates: Requirements 1.2**
 
 
 
@@ -170,8 +158,8 @@ No new data models are introduced unless specified in the component descriptions
 
 | Scenario | Handling |
 |---|---|
-| Invalid IDE_PROTOCOL configured | Fallback to standard 'file://' scheme or plain text if the configured protocol is unrecognized. |
-| Relative file paths in violation data | Resolve relative paths to absolute paths before URI generation to ensure the IDE can locate the file. |
+| IDE detection fails in a local interactive terminal. | Revert to standard file:// URI if no IDE is detected and OSC 8 is supported. |
+| Output is redirected to a pipe or static file. | Strip all escape sequences and return the raw file path string. |
 
 
 
@@ -180,17 +168,8 @@ No new data models are introduced unless specified in the component descriptions
 
 
 
-The testing strategy focuses on cross-environment compatibility and URI string correctness. 
+The testing strategy relies on environment simulation and property-based verification. Regression testing will involve running the existing report suite with a 'MockTerminal' to ensure that standard output formatting is not regressed when linking is disabled.
 
-Regression Testing:
-Existing linting logic tests will be run with a 'No-Link' reporter to ensure no character encoding issues interfere with existing output parsing.
+For CI verification, we will use a test job that sets 'CI=true' and asserts that no ANSI 033 sequences are present in the 'stdout' capture. 
 
-CI Verification:
-The CI pipeline will include a 'Protocol-Check' job that verifies the 'LinkGenerator' against a matrix of supported IDE schemes (vscode, cursor, pycharm).
-
-Property-Based Testing:
-Using the Hypothesis library, we will generate thousands of file paths and coordinate combinations to ensure that the generated OSC 8 strings never contain malformed URI characters that would break terminal rendering. 
-Configuration:
-- Library: Hypothesis / Pytest
-- Iterations: 500 for URI generation
-- Tags: #osc8 #deeplink #aesthetics
+New property-based tests using the 'Hypothesis' library will generate various file paths (including those with spaces and special characters) and line numbers to ensure that the generated URIs remain RFC 3986 compliant and correctly formatted for VSCode and IntelliJ schemes. We will target 100 iterations per formatter type. Configuration for these tests will be handled via a 'pytest' mark 'deep_link' to allow isolation from quick unit tests.

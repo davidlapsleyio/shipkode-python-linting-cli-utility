@@ -8,9 +8,9 @@
 
 
 
-The implementation strategy follows a domain-driven approach, prioritizing the core logic of incremental analysis and result aggregation before integrating with parallel execution infrastructure. We first establish the 'Incremental Analyzer' to filter the workload, ensuring we only process what is necessary. This is followed by building a robust 'Worker Pool Manager' that abstracts the complexities of multi-core communication.
+The implementation follows a domain-driven approach, starting with the core 'Job' entities and incremental logic before moving to the orchestration layer. We prioritize the 'Job' domain and 'Cache Controller' first to ensure that the core logic for what needs to run is decoupled from how it runs (parallel vs. sequential). 
 
-Finally, the 'Execution Orchestrator' is implemented to tie these components together, managing the lifecycle of a linting run from file discovery to final report generation. This sequence ensures that the most complex logic (parallel synchronization and resource management) is built upon stable, verified domain services.
+The second phase introduces the Task Scheduler and Parallel Runner Orchestrator using a process pool strategy to bypass the Global Interpreter Lock (GIL) and maximize multi-core utilization. Verification checkpoints and property-based tests are integrated after each phase to ensure deterministic output and resource constraints are strictly followed.
 
 
 
@@ -20,118 +20,117 @@ Finally, the 'Execution Orchestrator' is implemented to tie these components tog
 
 
 
-- [ ] F3-T1. Domain Logic and Incremental Foundation
+- [ ] F3-T1. Domain and Cache Layer Implementation
 
-- [ ] F3-T1.1 Define Domain Models and Incremental Logic
+- [ ] F3-T1.1 Define Lint Job Domain Entities
 
-- Create `src/domain/execution_types.ts` to define `FileManifest`, `AnalysisResult`, and `WorkerTask` interfaces.
+- Create/Update `src/domain/job.py`.
 
-- Implement `IncrementalAnalyzer` in `src/usecases/incremental_analyzer.ts`.
+- Define `LintJob` dataclass with fields: `file_path`, `ruleset_hash`, `content_hash`, and `priority`.
 
-- Logic: Compare current file hashes against metadata cache.
+- Implement `__eq__` and `__hash__` to support set operations for job comparison.
 
-- Method: `getFilesToProcess(files: string[]): Promise<string[]>`
+- Verification: Unit tests for `LintJob` equality and hashing.
 
-- Method: `updateCache(results: AnalysisResult[]): void`
-
-- _Requirements: 2_
+- _Requirements: F3.1, F3.2_
 
 
-- [ ] F3-T1.2 Implement Parallel Result Aggregation
+- [ ] F3-T1.2 Implement Incremental Cache Controller
 
-- Implement `ResultAggregator` in `src/usecases/result_aggregator.ts`.
+- Create `src/adapters/cache_controller.py`.
 
-- Logic: Reduce an array of `AnalysisResult` into a single `ConsolidatedReport`.
+- Implement `CacheController` class with `is_cached(file_path, ruleset_hash)` and `update_cache(file_path, ruleset_hash, results)`.
 
-- Handle deduplication of global errors and sum individual file issues.
+- Use a persistent storage backend (e.g., JSON or SQLite) to store file hashes and timestamps.
 
-- Verification: Unit test with mocked worker outputs to ensure sum equals total.
+- Verification: Ensure cached files return 'True' only if content and ruleset haven't changed.
 
-- _Requirements: 3_
-
-
-
-- [ ] F3-T2. Parallel Execution Infrastructure
-
-- [ ] F3-T2.1 Implement Multi-Core Worker Pool Manager
-
-- Implement `WorkerPoolManager` in `src/adapters/worker_pool.ts`.
-
-- Use Node.js `worker_threads` or `child_process` modules.
-
-- Logic: Determine worker count using `os.cpus().length - 1`.
-
-- Method: `setupPool()` and `dispatchTask(file: string): Promise<AnalysisResult>`.
-
-- _Requirements: 1_
+- _Requirements: F3.2_
 
 
-- [ ] F3-T2.2 Develop Worker Thread Script and Messaging
+- [ ] F3-T1.3 Checkpoint: Cache Logic Verification
 
-- Create `src/adapters/worker_entry.ts` as the entry point for worker threads.
+- Execute unit tests for CacheController.
 
-- Implement message passing protocol for sending file paths and receiving results.
+- Verify that a mocked rule-runner produces identical outputs when reading from cache vs. fresh execution.
 
-- Ensure error handling for worker crashes.
-
-- _Requirements: 1_
+- _Requirements: F3.2_
 
 
 
-- [ ] F3-T3. Integration Checkpoint I
+- [ ] F3-T2. Parallel Execution Engine
 
-- [ ] F3-T3.1 Checkpoint: Resource and Logic Verification
+- [ ] F3-T2.1 Implement Task Scheduler Batching
 
-- Execute unit tests for `WorkerPool` allocation logic.
+- Create `src/usecases/scheduler.py`.
 
-- Verify that on an N-core machine, exactly N-1 workers are spawned.
+- Implement `TaskScheduler` to group `LintJob` items into batches based on file size or rule complexity.
 
-- Verify `IncrementalAnalyzer` correctly excludes files with matching hashes.
+- Implement a `get_next_batch()` method that respects `N` available cores.
 
+- Verification: Test batching logic ensures no jobs are dropped or duplicated.
 
-
-- [ ] F3-T4. Orchestration and Reliability
-
-- [ ] F3-T4.1 Implement Execution Orchestrator
-
-- Implement `ExecutionOrchestrator` in `src/usecases/execution_orchestrator.ts`.
-
-- Logic:
-
-- 1. Call IncrementalAnalyzer to prune file list.
-
-- 2. Batch files and dispatch to WorkerPoolManager.
-
-- 3. Collect results and pass to ResultAggregator.
-
-- 4. Return final report to the UI/CLI layer.
-
-- _Requirements: 1, 2, 3_
+- _Requirements: F3.1_
 
 
-- [ ] F3-T4.2 Property-Based Testing Suite
+- [ ] F3-T2.2 Implement Parallel Runner Orchestrator Logic
 
-- Create `tests/properties/execution_engine.test.ts`.
+- Create `src/usecases/parallel_runner.py`.
 
-- Test 'Strict Incrementalism': Run engine twice, verify second run executes zero tasks.
+- Implement `ParallelRunnerOrchestrator` using `multiprocessing.Pool` or `concurrent.futures.ProcessPoolExecutor`.
 
-- Test 'Conservation of Results': Mock 100 workers with random issue counts, verify aggregator sum.
+- Implement worker function that takes a `LintJob`, executes rules, and returns results.
 
-- Test 'Resource Boundary Adherence': Spy on process spawning to ensure limit compliance.
+- Ensure the orchestrator handles keyboard interrupts and worker failures gracefully.
+
+- Verification: Run parallel execution on a test suite and compare results to sequential output.
+
+- _Requirements: F3.1, F3.3_
+
+
+- [ ] F3-T2.3 Property Test: Execution Determinism
+
+- Use a property-based testing tool (e.g., Hypothesis) to verify 'Execution Determinism'.
+
+- Validate that ParallelRunner(F) == SequentialRunner(F) for randomized file sets and rule counts.
+
+- _Requirements: F3.1_
 
 
 
-- [ ] F3-T5. Final Checkpoint
+- [ ] F3-T3. Integration and CI/CD Readiness
 
-- [ ] F3-T5.1 Final System Integration Test
+- [ ] F3-T3.1 Resource Management and CLI Integration
 
-- Run the full suite against a large codebase (>1000 files).
+- Add logic to auto-detect CPU count using `os.cpu_count()`.
 
-- Validate PR scan time is < 60 seconds as per requirement.
+- Add a `--parallel` and `--jobs N` flag to the CLI entry point.
 
-- Inspect the final report for consolidated health metrics.
+- Implement resource limiting to ensure the runner never spawns more than N+1 processes.
 
-- _Requirements: 1, 3_
+- Verification: Use `psutil` in tests to monitor process count during execution.
+
+- _Requirements: F3.1, F3.3_
+
+
+- [ ] F3-T3.2 CI/CD Performance Integration Test
+
+- Create a smoke test script that mimics a CI environment (restricted memory/CPU).
+
+- Run the ParallelRunner on a repository with 1000+ files and verify performance gain vs sequential mode.
+
+- Verification: CI pipeline terminates successfully with non-zero exit code if violations are found.
+
+- _Requirements: F3.3_
+
+
+- [ ] F3-T3.3 Checkpoint: Final Integration & Cache Integrity Verification
+
+- Final end-to-end check.
+
+- Verify 'Incremental Cache Integrity' by running the linter twice on the same codebase and ensuring 0 rules are executed on the second pass.
+
+- _Requirements: F3.2_
 
 
 
@@ -141,11 +140,5 @@ Finally, the 'Execution Orchestrator' is implemented to tie these components tog
 
 
 
-- Tasks marked with (*) are optional optimizations for very large repositories.
-
-- Traceability: requirements and properties are referenced to ensure all acceptance criteria are met.
-
-- Ordering Constraint: The Worker Pool Manager must be implemented before the Orchestrator to ensure the execution pipeline has a valid target for distribution.
-
-- Compatibility: The hash-based cache must be backward compatible with older scan metadata if present.
+- Tasks marked with (*) are optional optimizations but recommended for high-performance CI. Traceability is maintained via requirement_refs to ensure every feature is accounted for in the implementation. A 'split-first' strategy is used for the domain entities to ensure clean interfaces before concurrency is introduced. Backward compatibility is guaranteed by ensuring the ParallelRunner implements the same interface as the existing sequential logic.
 

@@ -8,11 +8,9 @@
 
 
 
-The Automated CI/CD Quality Gate (F4) is designed to transform the linter from a local developer tool into a robust policy enforcement engine. The design philosophy centers on 'Predictability and Speed': the tool must provide deterministic exit codes for shell integration and utilize parallelism to ensure that quality checks do not become a bottleneck in the delivery pipeline. 
+The Automated CI/CD Quality Gate feature focuses on transforming the linter from a desktop tool into a robust pipeline primitive. The strategy centers on 'Determinism and Observability': ensuring the tool behaves predictably in non-interactive environments while providing rich, structured data for downstream systems. We will introduce a strict separation between the linting core and the reporting/exit-code logic to ensure that CI-specific requirements don't leak into the domain rules.
 
-The approach introduces an Orchestrator layer that decouples the engine's execution from its reporting. We will implement high-performance parallel processing using Node.js worker threads and an incremental processing cache based on file hashes. This allows the system to scale gracefully from small projects to massive monorepos where only changed files are checked during CI runs.
-
-Technically, we are adding machine-readable reporting adapters (JSON/JUnit) while keeping the core Domain Rules intact. The incremental approach involves first standardizing the exit code logic, then adding the serial reporters, and finally introducing the parallel/incremental execution engine as an optimization layer.
+The implementation follows an incremental approach. First, we standardize the internal Result models to support status codes. Second, we implement a multi-formatter system that allows simultaneous output to stdout (for human logs) and files (for machine data). Finally, we introduce the ParallelExecutor using Python's 'multiprocessing' or 'asyncio' patterns to maximize throughput on multi-core CI runners. What stays the same is the core rule evaluation logic; what changes is how the results of those evaluations are aggregated, reported, and signaled to the parent process.
 
 
 
@@ -26,34 +24,38 @@ Technically, we are adding machine-readable reporting adapters (JSON/JUnit) whil
 graph TD
     subgraph "Infrastructure Layer"
         CLI[CLI Entry Point]
-        FS[File System]
+        FS[File System/Git]
     end
 
-    subgraph "Adapters Layer"
-        REP_JSON[JSON Reporter]
-        REP_JUNIT[JUnit Reporter]
-        PAR[Parallel Engine]
+    subgraph "Adapter Layer"
+        LinterAdapter[Linter Runner]
+        JSONFormatter[JSON Reporter]
+        JUnitFormatter[JUnit Reporter]
+        ConsoleFormatter[Static Color Reporter]
     end
 
-    subgraph "Use Cases Layer"
-        GATE[Quality Gate Orchestrator]
-        LINT[Linting Engine]
+    subgraph "UseCase Layer"
+        Gatekeeper[Exit Code Manager]
+        ParallelExecutor[Parallel Task Runner]
+        IncrementalLogic[Incremental Change Filter]
     end
 
     subgraph "Domain Layer"
-        RES[Lint Result Model]
-        EXIT[Exit Code Registry]
+        ReportModel[Lint Report Entity]
+        ResultStatus[Execution Status Enum]
     end
 
-    CLI --> GATE
-    GATE --> PAR
-    PAR --> LINT
-    LINT --> RES
-    GATE --> REP_JSON
-    GATE --> REP_JUNIT
-    REP_JSON --> FS
-    REP_JUNIT --> FS
-    GATE --> EXIT
+    CLI --> Gatekeeper
+    Gatekeeper --> ParallelExecutor
+    ParallelExecutor --> IncrementalLogic
+    IncrementalLogic --> LinterAdapter
+    LinterAdapter --> ReportModel
+    ReportModel --> JSONFormatter
+    ReportModel --> JUnitFormatter
+    ReportModel --> ConsoleFormatter
+    ConsoleFormatter --> FS
+    JSONFormatter --> FS
+    JUnitFormatter --> FS
 ```
 
 
@@ -64,57 +66,61 @@ graph TD
 
 
 
-### 1. Quality Gate Orchestrator (`usecases`)
+### 1. Exit Code Manager (`usecases`)
 
 
 
 
-**Path:** `src/usecases/quality_gate.ts`
+**Path:** `src/usecases/exit_manager.py`
 
 | Responsibility | Description |
 |---|---|
-| Coordinate parallel execution across worker threads | |
-| Aggregate findings from multiple files | |
-| Trigger report generation for multiple formats | |
-| Calculate process exit code based on severity thresholds | |
+| Map lint results to standardized integer exit codes | |
+| Handle 'strict' mode overrides for warnings | |
+| Interface with process exit signals | |
 
 
 ```python
-interface QualityGateConfig {
-  failOnSeverity: 'error' | 'warning' | 'info';
-  outputFormats: Array<'json' | 'junit' | 'console'>;
-  outputPath: string;
-  parallel: boolean;
-}
+class ExitCodeManager:
+    EXIT_CODES = {
+        "SUCCESS": 0,
+        "VIOLATIONS_FOUND": 1,
+        "CONFIGURATION_ERROR": 2,
+        "SYSTEM_FAULT": 3
+    }
 
-class QualityGateOrchestrator {
-  async run(config: QualityGateConfig): Promise<number>;
-}
+    def determine_exit_code(self, report: LintReport, strict: bool) -> int:
+        if report.has_errors:
+            return self.EXIT_CODES["VIOLATIONS_FOUND"]
+        ...
 ```
 
 
 
 
-### 2. Parallel Execution Engine (`adapters`)
+### 2. Parallel Task Runner (`usecases`)
 
 
 
 
-**Path:** `src/adapters/parallel_engine.ts`
+**Path:** `src/usecases/parallel_executor.py`
 
 | Responsibility | Description |
 |---|---|
-| Manage worker thread pool lifecycle | |
-| Distribute linting tasks across threads | |
-| Collect and merge results from workers | |
-| Handle worker crashes or timeouts | |
+| Distribute linting tasks across CPU cores | |
+| Aggregate results from parallel workers | |
+| Manage worker life-cycle and memory limits | |
 
 
 ```python
-class ParallelEngine {
-  constructor(workerCount: number = os.cpus().length);
-  async execute<T, R>(items: T[], task: (item: T) => R): Promise<R[]>;
-}
+class ParallelExecutor:
+    def __init__(self, max_workers: int):
+        self.pool = ProcessPoolExecutor(max_workers=max_workers)
+
+    async def run_parallel(self, files: List[Path], rule_engine: Callable) -> List[Issue]:
+        chunks = self.partition_files(files)
+        results = await asyncio.gather(*[self.run_chunk(c) for c in chunks])
+        return flatten(results)
 ```
 
 
@@ -125,75 +131,28 @@ class ParallelEngine {
 
 
 
-**Path:** `src/adapters/reporters/`
+**Path:** `src/adapters/reporters.py`
 
 | Responsibility | Description |
 |---|---|
-| Serialize LintResults to JSON format | |
-| Serialize LintResults to JUnit XML format | |
-| Ensure filesystem path safety for output files | |
+| Serialize LintReport entities into JSON/XML/ANSI formats | |
+| Ensure compatibility with JUnit XSD for CI integration | |
+| Handle file I/O for report persistence | |
 
 
 ```python
-interface Reporter {
-  format(results: LintResult[]): string;
-  extension: string;
-}
+class IReporter(Protocol):
+    def format(self, report: LintReport) -> str: ...
 
-class JUnitReporter implements Reporter {
-  format(results: LintResult[]): string {
-    // Converts finding to <testcase> with <failure> tags
-  }
-}
-```
+class JUnitReporter(IReporter):
+    def format(self, report: LintReport) -> str:
+        # Returns XML structured string compatible with JUnit schema
+        pass
 
-
-
-
-### 4. Exit Code Registry (`domain`)
-
-
-
-
-**Path:** `src/domain/exit_codes.ts`
-
-| Responsibility | Description |
-|---|---|
-| Maintain single source of truth for process exit codes | |
-| Map internal exception types to exit codes | |
-
-
-```python
-enum ExitCode {
-  SUCCESS = 0,
-  LINT_VIOLATIONS_FOUND = 1,
-  INTERNAL_ERROR = 2,
-  INVALID_CONFIG = 3
-}
-```
-
-
-
-
-### 5. Incremental Change Detector (`infrastructure`)
-
-
-
-
-**Path:** `src/infrastructure/incremental_cache.ts`
-
-| Responsibility | Description |
-|---|---|
-| Identify modified files since last run | |
-| Manage persistent cache on disk | |
-| Verify file hashes to detect changes bypassing Git | |
-
-
-```python
-class IncrementalCache {
-  getChangedFiles(sinceHash: string): Promise<string[]>;
-  updateCache(file: string, hash: string): void;
-}
+class ConsoleReporter(IReporter):
+    def format(self, report: LintReport) -> str:
+        # Returns colorized string for TTY
+        pass
 ```
 
 
@@ -219,12 +178,12 @@ No new data models are introduced unless specified in the component descriptions
 
 
 
-### Property F4-P1: Deterministic Exit Codes on Failure
+### Property F4-P1: Standardized Exit Invariant
 
 
 
 
-*For any linting execution where findings meet or exceed the 'fail-on' threshold, the process exit code must be exactly 1.*
+*For any linting execution, the process must return exit code 1 if and only if the number of detected 'Error' severity violations is greater than zero, unless overridden by configuration.*
 
 **Validates: Requirements 1.1**
 
@@ -235,18 +194,18 @@ No new data models are introduced unless specified in the component descriptions
 
 
 
-*For any generated JUnit report, the file must be valid XML according to the JUnit XSD and contain entry counts equal to the total findings count.*
+*For any generated JSON report, the output must be valid according to the RFC 8259 specification and contain keys for 'summary', 'files', and 'timestamp'.*
 
 **Validates: Requirements 2.1**
 
 
 
-### Property F4-P3: Parallel Performance Benefit
+### Property F4-P3: Concurrency Determinism
 
 
 
 
-*For any execution with 'parallel' enabled on N files, the wall-clock time must be less than the sequential execution time for N > 100, assuming N > CPU Cores.*
+*For any set of files F, the set of issues detected in a parallel execution must be identical to the set of issues detected in a sequential execution.*
 
 **Validates: Requirements 3.1**
 
@@ -259,9 +218,9 @@ No new data models are introduced unless specified in the component descriptions
 
 | Scenario | Handling |
 |---|---|
-| Worker thread crashes during parallel execution | Terminate non-crashed workers, aggregate errors from crashed workers, and exit with code 2 to indicate system failure. |
-| Output directory for reports is not writable | Catch I/O exceptions, log a human-readable message to stderr, and exit with code 2. Ensure previous report parts are cleaned up. |
-| Conflict between '--fail-on' and internal severity levels | Validate CLI flags using a schema; if invalid, print usage instructions and exit with code 3 (Invalid Config). |
+| LLM Provider API Timeout or Network Failure during CI run | Catch exception, log 'System Error' with red ANSI formatting to stderr, and return Exit Code 3. |
+| Invalid configuration file provided in CI environment | Validate config at startup; if invalid, print schema errors and return Exit Code 2. |
+| Resource depletion (Out of Memory) during parallel execution worker spawn | Automatically fallback to sequential execution and log a warning; do not fail the build. |
 
 
 
@@ -270,15 +229,6 @@ No new data models are introduced unless specified in the component descriptions
 
 
 
-Our testing strategy focuses on CI integration reliability. We will use a combination of Integration Tests and Property-Based Tests (PBT).
+The testing strategy focuses on environment simulation and property-based verification. Regression testing will utilize a suite of 'Golden Master' files where both the output content (JSON/JUnit) and the process exit code are compared against known-good benchmarks to prevent drift. CI verification will be handled via a dedicated GitHub Action workflow that runs the linter against a 'Broken Repository' fixture, asserting that the pipeline fails with the expected code 1.
 
-1. Regression Testing: We will run the existing rule test suite through the new Orchestrator to ensure that output-layer changes haven't altered the detection logic.
-
-2. CI Verification: We will use a 'meta-pipeline' to verify exit codes. A shell script will execute the linter against 'known-fail' and 'known-pass' directories and assert the $? status.
-   - Command: `npm run build && test_exit_codes.sh`
-
-3. Property-Based Tests (fast-check): We will generate large sets of synthetic findings and verify that the JUnit reporter produces valid XML and that the parallel engine results exactly match the sequential engine results.
-   - Iterations: 100
-   - Tag: `[CI-INTEGRATION]`
-
-4. Performance Benchmarks: A specialized CI job will run the linter on the codebase itself in both serial and parallel modes, asserting a minimum 2x speedup on 4+ core runners.
+New property-based tests will be implemented using the 'Hypothesis' library. These tests will generate random file structures and rule configurations to ensure that the ParallelExecutor always produces the same outcome as the SequentialExecutor, and that the JUnit reporter always produces valid XML regardless of the characters found in the linted code. We will also perform 'Log Staticity' tests, ensuring that when the TTY is disabled (as in most CI logs), the tool suppresses interactive elements like progress bars in favor of static, append-only logs. Test execution will be tagged with '@ci-gate' and run with 100 iterations per property.

@@ -8,11 +8,9 @@
 
 
 
-The Modular Linting Plugin Architecture introduces a decoupled execution engine designed for speed and clarity. The core strategy shifts from sequential execution to a parallelized, category-aware model. By grouping rules into Style, Security, and Logic clusters at the domain level, we enable targeted execution and reporting. The architecture remains backend-agnostic, allowing any third-party linter to be integrated via an adapter that maps results to our internal domain models.
+The Modular Linting Plugin Architecture adopts a 'Parallel-First' philosophy, moving away from sequential rule processing to a distributed execution model. By decoupling rule definitions into distinct categories (Style, Logic, Security), we enable fine-grained quality gates where a security violation might break a build, while style warnings are relegated to non-blocking diagnostics. The core engine is refactored to treat every linting rule as an independent unit of work that can be offloaded to worker threads.
 
-The primary architectural change is the introduction of the 'Parallel Execution Orchestrator' and the 'Unified Result Aggregator'. These components sit between the user interface and the specific linting tools. Existing linting tools do not need modification; instead, we wrap them in adapters that implement our plugin protocol. This incremental approach allows us to keep existing configurations while providing a unified, high-performance interface.
-
-The design philosophy prioritizes Developer Experience (DX) by delivering a color-coded TUI that emphasizes severity and category. By executing checks in parallel, we directly address the requirement to minimize 'Developer Idle Time', transforming linting from a slow gatekeeper into an instant feedback loop within the CI/CD pipeline.
+To support aesthetics-driven development, the reporting layer is completely overhauled to consume a new 'Rich Diagnostic' interface. This interface mandates positional data (offsets and ranges), enabling the terminal reporter to generate syntax-highlighted snippets similar to modern compilers. The incremental execution strategy is implemented at the engine level, using content hashing to skip unnecessary computations, thereby significantly reducing developer feedback cycles in large monorepos.
 
 
 
@@ -24,36 +22,39 @@ The design philosophy prioritizes Developer Experience (DX) by delivering a colo
 
 ```mermaid
 graph TD
-    subgraph "Infrastructure Layer"
-        CLI[TUI Terminal Adapter]
-        Config[YAML Config Loader]
+    subgraph domain [Domain Layer]
+        Rule[Rule Definition]
+        Diag[Diagnostic Model]
+        Result[Lint result]
     end
 
-    subgraph "Adapter Layer"
-        StylePlugin[Style Linter Adapter]
-        SecurityPlugin[Security Linter Adapter]
-        LogicPlugin[Logic Linter Adapter]
-        TUI[Color-coded Terminal Renderer]
+    subgraph usecases [Use Case Layer]
+        Engine[Lint Engine]
+        Registry[Plugin Registry]
+        Scheduler[Parallel Task Scheduler]
     end
 
-    subgraph "UseCase Layer"
-        Orchestrator[Parallel Execution Orchestrator]
-        Aggregator[Unified Result Aggregator]
+    subgraph adapters [Adapters Layer]
+        StylePlugin[Style Plugin]
+        LogicPlugin[Logic Plugin]
+        SecPlugin[Security Plugin]
+        Reporter[Terminal Reporter]
     end
 
-    subgraph "Domain Layer"
-        RuleModels[Rule & Cluster Models]
-        LintResult[Lint Result Entities]
+    subgraph infrastructure [Infrastructure Layer]
+        WorkerPool[Worker Threads/Pool]
+        Cache[Incremental Cache]
     end
 
-    CLI --> Orchestrator
-    Config --> Orchestrator
-    Orchestrator --> StylePlugin
-    Orchestrator --> SecurityPlugin
-    Orchestrator --> LogicPlugin
-    StylePlugin & SecurityPlugin & LogicPlugin --> Aggregator
-    Aggregator --> TUI
-    TUI --> CLI
+    Engine --> Registry
+    Engine --> Scheduler
+    Scheduler --> WorkerPool
+    Registry --> StylePlugin
+    Registry --> LogicPlugin
+    Registry --> SecPlugin
+    StylePlugin & LogicPlugin & SecPlugin -.-> Rule
+    Reporter --> Diag
+    Engine --> Cache
 ```
 
 
@@ -64,130 +65,92 @@ graph TD
 
 
 
-### 1. Parallel Execution Orchestrator (`usecases`)
+### 1. Parallel Lint Engine (`usecases`)
 
 
 
 
-**Path:** `src/usecases/orchestrator.ts`
+**Path:** `src/core/engine.ts`
 
 | Responsibility | Description |
 |---|---|
-| Parallelize execution of rule clusters | |
-| Manage concurrency limits to prevent resource exhaustion | |
-| Collect raw results from multiple adapter plugins | |
+| Orchestrate plugin execution flow | |
+| Manage incremental execution cache state | |
+| Aggregate diagnostics from parallel workers | |
+| Enforce quality gate categories | |
 
 
 ```python
+interface ILintEngine {
+  registerPlugin(plugin: ILintPlugin): void;
+  execute(files: string[]): Promise<LintReport>;
+}
+
 interface ILintPlugin {
-  category: 'Style' | 'Security' | 'Logic';
-  execute(files: string[]): Promise<LintResult[]>;
-}
-
-class ParallelOrchestrator {
-  async runAll(plugins: ILintPlugin[]): Promise<AggregatedReport> {
-    const tasks = plugins.map(p => this.limit(() => p.execute(files)));
-    const results = await Promise.all(tasks);
-    return this.aggregator.combine(results.flat());
-  }
+  metadata: {
+    id: string;
+    category: 'Style' | 'Logic' | 'Security';
+  };
+  run(context: LintContext): Promise<Diagnostic[]>;
 }
 ```
 
 
 
 
-### 2. Unified Result Aggregator (`usecases`)
+### 2. Rich Diagnostic Reporter (`adapters`)
 
 
 
 
-**Path:** `src/usecases/aggregator.ts`
+**Path:** `src/adapters/reporters/terminal_reporter.ts`
 
 | Responsibility | Description |
 |---|---|
-| Normalize disparate plugin outputs into a unified format | |
-| Cluster issues by their primary rule category | |
-| Calculate summary statistics for repository health metrics | |
+| Format raw diagnostic data for terminal display | |
+| Apply syntax highlighting to code snippets within reports | |
+| Group errors by category for quick triage | |
 
 
 ```python
-interface StandardIssue {
-  id: string;
-  severity: 'error' | 'warning';
-  category: 'Style' | 'Security' | 'Logic';
+interface Diagnostic {
+  code: string;
   message: string;
-  location: { line: number; column: number; file: string };
+  severity: Severity;
+  range: { start: Position; end: Position };
+  relatedInformation?: Location[];
+  category: RuleCategory;
 }
 
-class ResultAggregator {
-  aggregate(results: LintResult[]): AggregatedReport {
-    return results.reduce((report, res) => {
-      report[res.category].push(this.mapToStandard(res));
-      return report;
-    }, new AggregatedReport());
-  }
+class TerminalReporter implements IReporter {
+  render(diagnostics: Diagnostic[]): void;
 }
 ```
 
 
 
 
-### 3. Color-coded TUI Renderer (`adapters`)
+### 3. Parallel Task Scheduler (`infrastructure`)
 
 
 
 
-**Path:** `src/adapters/tui_renderer.ts`
+**Path:** `src/infrastructure/scheduler.ts`
 
 | Responsibility | Description |
 |---|---|
-| Generate color-coded terminal output | |
-| Group display by Rule Categories | |
-| Provide summary dashboard for repository health overview | |
+| Manage worker thread lifecycle | |
+| Distribute linting tasks across available CPU cores | |
+| Handle worker-level error isolation | |
 
 
 ```python
-class TUIRenderer {
-  render(report: AggregatedReport): void {
-    Object.entries(report.clusters).forEach(([category, issues]) => {
-      process.stdout.write(this.formatHeader(category));
-      issues.forEach(issue => {
-        process.stdout.write(this.formatIssue(issue));
-      });
-    });
-  }
+export class ParallelScheduler {
+  private pool: WorkerPool;
   
-  private formatHeader(cat: string): string {
-    const colors = { Security: 'red', Style: 'blue', Logic: 'yellow' };
-    return chalk[colors[cat]].bold(`\n=== ${cat} Cluster ===\n`);
+  async scheduleTasks<T>(tasks: Array<() => Promise<T>>): Promise<T[]> {
+    return Promise.all(tasks.map(t => this.pool.run(t)));
   }
-}
-```
-
-
-
-
-### 4. Core Domain Models (`domain`)
-
-
-
-
-**Path:** `src/domain/models.ts`
-
-| Responsibility | Description |
-|---|---|
-| Define immutable result structures | |
-| Enforce type safety for rule categories | |
-
-
-```python
-export type RuleCategory = 'Style' | 'Security' | 'Logic';
-
-export interface LintResult {
-  readonly ruleId: string;
-  readonly category: RuleCategory;
-  readonly filePath: string;
-  readonly message: string;
 }
 ```
 
@@ -214,36 +177,36 @@ No new data models are introduced unless specified in the component descriptions
 
 
 
-### Property F0b-P1: Execution Efficiency Invariant
+### Property F0b-P1: Mandatory Categorization
 
 
 
 
-*For any set of executed plugins P, the total execution time T shall be less than or equal to (Sum of execution times in P / Parallelism Factor) + Orchestration Overhead.*
+*For any linting execution, the resulting diagnostics must be tagged with a category belonging to {Style, Logic, Security}.*
 
-**Validates: Requirements 2**
-
-
-
-### Property F0b-P2: Categorization Completeness
+**Validates: Requirements E3, E6, E7**
 
 
 
-
-*For any LintResult R produced by a plugin, R.category must exist in {Style, Security, Logic} and be correctly captured in the AggregatedReport.*
-
-**Validates: Requirements 1, 3**
-
-
-
-### Property F0b-P3: Visual Alert Consistency
+### Property F0b-P2: Incremental Performance Bound
 
 
 
 
-*For any TUI Render action, every Security-level issue must be rendered with an ANSI Red escape sequence.*
+*For any file with a constant hash and unchanged plugin version, the execution time of the second linting pass must be less than 10% of the first pass execution time.*
 
-**Validates: Requirements 3**
+**Validates: Requirements E8**
+
+
+
+### Property F0b-P3: Diagnostic Fidelity
+
+
+
+
+*For any diagnostic reported, the data structure must contain exact line and column ranges corresponding to the source document.*
+
+**Validates: Requirements E18, E20, E13, E16**
 
 
 
@@ -254,9 +217,9 @@ No new data models are introduced unless specified in the component descriptions
 
 | Scenario | Handling |
 |---|---|
-| A specific linting plugin (e.g., Security scan) crashes or times out. | The Orchestrator catches the error, marks that specific category as 'Failed' in the report, and continues executing other category plugins. |
-| Plugin returns a result with an unrecognized or missing category. | The Aggregator assigns a default 'Logic' category and logs a warning for plugin maintainers. |
-| Terminal does not support ANSI colors. | TUI Renderer falls back to monochrome plain-text output. |
+| A plugin throws an unhandled exception during parallel execution. | The offending plugin is isolated, its error is logged to the diagnostic stream as a 'System Error' category, and other plugins continue to execute. |
+| A plugin returns diagnostic ranges that exceed the file length. | The Diagnostic Reporter ignores invalid ranges and defaults to file-level reporting, preventing a UI crash. |
+| Incremental cache corruption or version mismatch. | The engine clears the local cache for that file and performs a full re-scan. |
 
 
 
@@ -265,12 +228,6 @@ No new data models are introduced unless specified in the component descriptions
 
 
 
-The testing strategy focuses on ensuring concurrency safety and categorization accuracy. Regression testing will involve running the new Orchestrator against the existing monolithic test suite to ensure 100% parity in detected issues. CI verification will use 'time-limited' gates to ensure that parallel execution meets our performance benchmarks for 'Developer Idle Time'.
+The testing strategy centers on 'Property-Based Testing' (using fast-check) to ensure the parallel scheduler handles race conditions and worker failures gracefully. We will generate thousands of random 'Rule' outputs to verify that the 'Terminal Reporter' can handle various edge cases in source code ranges without crashing.
 
-We will implement new property-based tests using 'fast-check'. For example, one test will generate thousands of random linting results across different files and categories, verifying that the Aggregator always produces a count that matches the input sum and that no categories are dropped. 
-
-Testing configuration:
-- Framework: vitest
-- Parallelism: 4 workers (configurable in CI)
-- Property Tests: 100 iterations per suite
-- Tags: #F0b #Performance #Parallelization
+Regression testing will involve running the new engine against the existing rule-set to ensure that diagnostic counts remain identical to the legacy sequential engine. CI verification will be automated via GitHub Actions, using the `time` command to verify that incremental runs meet the <10% execution time performance bound. We will use the '@test:parallel' tag for concurrency-specific tests and '@test:visual' for diagnostic rendering snapshots.

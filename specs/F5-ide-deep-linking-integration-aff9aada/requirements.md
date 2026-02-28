@@ -8,7 +8,7 @@
 
 
 
-The IDE Deep-Linking Integration feature enhances the developer's debugging flow by bridging the gap between static terminal diagnostic data and the active editing environment. By implementing terminal hyperlink protocols, Hyper-Lint transitions from a purely informational tool into an interactive navigation hub. This feature addresses the cognitive load and "context switching" pain points identified by developers by allowing them to jump directly from a color-coded error report in the terminal to the exact line of code in their IDE. The integration ensures that the high-fidelity visualizations—including PEP 8, logic, and security violations—are not just readable but actionable, directly supporting the goal of instant issue identification and resolution.
+The IDE Deep-Linking Integration feature enables Hyper-Lint to bridge the gap between static terminal reporting and active development environments. By implementing terminal protocols such as OSC 8 hyperlinks and IDE-specific URI schemes, the tool allows developers to navigate directly from a linting violation in the terminal [E10][E14] to the exact line of code in their preferred editor [E16]. This feature addresses the pain point of context switching and reduces the time-to-fix for security vulnerabilities, style issues, and logical errors [E3][E6] by transforming static output into an actionable gateway for immediate remediation [E5][E13].
 
 
 
@@ -18,35 +18,12 @@ The IDE Deep-Linking Integration feature enhances the developer's debugging flow
 
 
 
-### Requirement 1: OSC 8 Hyperlink Generation
+### Requirement 1: OSC 8 Terminal Hyperlink Support
 
 
 
 
-**User Story:** As an Aesthetics-Driven Developer, I want linting violations to be rendered as clickable terminal hyperlinks [E10], so that I can identify and fix issues instantly without leaving my terminal environment [E5][E13].
-
-
-
-
-#### Acceptance Criteria
-
-
-
-
-1. WHEN the terminal output displays a specific line of code where an error occurs [E16], THE system SHALL wrap the file path and line number in an OSC 8 escape sequence.
-
-2. IF the terminal emulator supports the OSC 8 protocol, THEN the file path SHALL be rendered as a clickable hyperlink leading to the local file source.
-
-3. WHEN a user clicks the generated hyperlink, THE system SHALL attempt to open the file at the specific line and column associated with the linting violation [E5][E13].
-
-
-
-### Requirement 2: Structured Location Metadata
-
-
-
-
-**User Story:** As an Aesthetics-Driven Developer, I want the summary table to include precise file coordinates for Security, Style, and Syntax errors [E15], so that I have a clear visual hierarchy of where issues reside in the codebase [E16].
+**User Story:** As an Aesthetics-Driven Developer, I want clickable file paths in my terminal report [E9], so that I can open the offending code immediately without manual navigation [E5][E13].
 
 
 
@@ -56,20 +33,20 @@ The IDE Deep-Linking Integration feature enhances the developer's debugging flow
 
 
 
-1. WHEN the system generates a static report [E12][E14], THE system SHALL include a 'Location' column in the error summary table [E15].
+1. WHEN the CLI utility generates a report, THE TUI SHALL wrap the file path and line number in an OSC 8 escape sequence [E10][E14].
 
-2. IF a Security or Syntax error is detected [E6][E15], THEN the location metadata SHALL include the absolute or relative file path and the line-start integer.
+2. IF the terminal emulator supports OSC 8, THEN the file path SHALL appear as a clickable hyperlink in the Rich TUI output [E9][E12].
 
-3. WHEN the Rich TUI renders the location metadata [E10], THE system SHALL format the text as 'file_path:line:column' to ensure compatibility with standard IDE 'open' protocols.
-
-
-
-### Requirement 3: IDE-Specific URI Scheme Support
+3. WHEN a user clicks the hyperlink, THE system SHALL attempt to open the local file at the specified line using the default system handler or configured IDE URI.
 
 
 
+### Requirement 2: IDE-Specific Line Jumping
 
-**User Story:** As an Aesthetics-Driven Developer, I want the linter to integrate with my specific IDE settings, so that clicking a file in the color-coded report [E14] opens the file in my preferred editing environment.
+
+
+
+**User Story:** As an Aesthetics-Driven Developer, I want the terminal output to link directly to the line of code [E16], so that I can fix security and style issues [E3][E6] instantly within my preferred IDE.
 
 
 
@@ -79,11 +56,32 @@ The IDE Deep-Linking Integration feature enhances the developer's debugging flow
 
 
 
-1. WHEN the Hyper-Lint CLI is executed, THE system SHALL detect the current environment variable 'EDITOR' or 'VISUAL'.
+1. WHEN a linting violation is detected, THE system SHALL generate a deep-link URI (e.g., vscode://file/...) targeting the specific line and column [E16].
 
-2. IF the 'EDITOR' variable is set to a supported IDE (e.g., VS Code, PyCharm), THEN the system SHALL format the deep-link URL using the IDE's specific URI scheme (e.g., 'vscode://file/').
+2. IF the user has configured a preferred IDE in the Hyper-Lint settings, THEN the CLI SHALL prioritize that IDE's URI scheme for all generated links.
 
-3. WHEN the user invokes the hyperlink in a local environment, THE system SHALL execute the link without requiring manual path entry.
+3. WHEN the report is generated, THE deep-link SHALL be embedded within the color-coded source code snippets [E18][E20].
+
+
+
+### Requirement 3: Environment-Aware Link Rendering
+
+
+
+
+**User Story:** As a DevOps Engineer, I want the tool to remain compatible with CI/CD logs [E7][E8], so that interactive links do not bloat or break non-interactive static reporting [E11][E12].
+
+
+
+
+#### Acceptance Criteria
+
+
+
+
+1. WHEN Hyper-Lint runs in a CI/CD environment [E4][E7], THEN the system SHALL fallback to standard text-based paths to ensure portability [E11][E12].
+
+2. IF the terminal environment does not support rich formatting, THEN the CLI SHALL emit plain text file references to prevent corrupted logs [E12].
 
 
 
