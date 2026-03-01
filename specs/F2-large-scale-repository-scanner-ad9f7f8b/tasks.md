@@ -8,9 +8,9 @@
 
 
 
-The implementation strategy follows a domain-driven approach, prioritizing the file discovery and task partitioning core before developing the reporting interface. We will first establish the data models for repository trees and file metadata to support incremental scanning and parallel execution. This ensures that the foundation for 'Incremental Correctness' and 'Parallel Efficiency' is validated before the UI layer is added.
+The implementation strategy follows a domain-driven approach, starting with the core scanning logic and task partitioning models before moving toward infrastructure-specific parallel execution. We prioritize the 'Task Partitioner' and 'Incremental Tracker' first because the efficiency of the large-scale scanner depends on the ability to minimize work (delta tracking) and distribute it correctly.
 
-The process is divided into four main phases: establishing the incremental cache and discovery engine, implementing the parallel task dispatcher, building the TUI reporter, and finally validating the system against performance and correctness properties. This sequence ensures that we have a functional CLI tool that can be tested in headless mode before finalizing the terminal user interface.
+Once the domain logic for partitioning is stable, we implement the hardware-specific worker pool and the file system adapters. This ensures that the parallel execution logic is decoupled from the file discovery logic. The final phase integrates these into a Scan Orchestrator that enforces quality gates and security invariants, providing a unified entry point for both local development and CI/CD pipelines.
 
 
 
@@ -20,109 +20,100 @@ The process is divided into four main phases: establishing the incremental cache
 
 
 
-- [ ] F2-T1. Domain Core & Incremental Engine
+- [ ] F2-T1. Domain Logic & Partitioning
 
-- [ ] F2-T1.1 Implement Incremental Result Cache
+- [ ] F2-T1.1 Implement Task Partitioning Logic
 
-- Create `src/domain/models.py` to define `FileMetadata` (path, mtime, hash) and `ScanResult`.
+- Create `src/domain/models.py` to hold `ScanTask` and `FileMetadata` dataclasses.
 
-- Implement `src/infrastructure/cache.py` using a lightweight KV store (e.g., JSON or SQLite) to persist file hashes.
+- Implement `src/usecases/partitioner.py` with `TaskPartitioner` class.
 
-- Define `should_scan(file_path)` logic based on hash comparisons.
+- Add logic to split a list of file paths into N roughly equal batches.
 
-- Verification: Unit test that `should_scan` returns False for unchanged files based on the cache.
+- Verification: Unit test with varying file counts and core counts to ensure even distribution.
 
-- _Requirements: E8, E27_
-
-
-- [ ] F2-T1.2 Develop Recursive Directory Discovery
-
-- Create `src/usecases/scanner.py`.
-
-- Implement `RecursiveDiscovery` class to walk directories and identify project roots (e.g., presence of package.json/pyproject.toml).
-
-- Integrate with the Cache to filter out unchanged files early in the discovery phase.
-
-- Verification: Verify discovery identifies all sub-projects in a nested test repository.
-
-- _Requirements: E3, E6_
+- _Requirements: 2_
 
 
-- [ ] F2-T1.3 Checkpoint: Incremental Logic Validation
+- [ ] F2-T1.2 Implement Incremental Delta Tracking
 
-- Verify that the Scanner correctly identifies only changed files in a multi-project setup.
+- Create `src/domain/delta_tracker.py` to manage file hashes and timestamps.
 
-- Ensure the cache is updated only after a successful file scan.
+- Implement logic to compare current file state against a persistent `.scan_cache` file.
+
+- Implement the 'Incremental Completeness Invariant' check logic.
+
+- Verification: Mock file system changes and ensure only 'modified' files are returned in the task list.
+
+- _Requirements: 3_
 
 
 
-- [ ] F2-T2. Parallel Execution Framework
+- [ ] F2-T2. Checkpoint: Domain Logic Validation
 
-- [ ] F2-T2.1 Implement Task Partitioning & Execution
+- [ ] F2-T2.1 Checkpoint: Domain Validation
 
-- Implement `TaskDispatcher` in `src/usecases/dispatcher.py`.
+- Run suite of unit tests for `TaskPartitioner` and `DeltaTracker`.
 
-- Create `PartitioningStrategy` to group files into chunks for worker processes.
+- Verify that 0 files are scanned when no changes occur.
 
-- Implement `ParallelExecutor` using Python's `multiprocessing` or `concurrent.futures`.
-
-- Verification: Mock a workload and verify that CPU utilization scales with the number of workers.
-
-- _Requirements: E8_
-
-
-- [ ] F2-T2.2 Property Test: Parallel Efficiency Validation
-
-- Write a property-based test using `Hypothesis` or a similar framework to verify `T <= (TotalTime/N) + Overhead`.
-
-- Simulate varying file counts and sizes to ensure the dispatcher doesn't choke on small files.
+- Verify that all files are scanned on the first run.
 
 
 
-- [ ] F2-T3. Reporting & UI Adapters
+- [ ] F2-T3. Adapters & Infrastructure
 
-- [ ] F2-T3.1 Develop Aggregated TUI Reporter
+- [ ] F2-T3.1 Recursive File Discovery Adapter
 
-- Create `src/adapters/tui_reporter.py` using `rich` or `blessed`.
+- Implement `FileSystemAdapter` in `src/adapters/filesystem.py`.
 
-- Implement `AggregatedReport` to collect results from `TaskDispatcher`.
+- Add `recursive_search(pattern: str)` method using `pathlib.rglob`.
 
-- Format results into a project-by-project summary with pass/fail status.
+- Ensure it ignores directories specified in a `.scannerignore` file.
 
-- Verification: Manually trigger a scan and verify the TUI layout matches the design for organization-wide visibility.
+- Verification: Test against a nested directory structure with 1000+ dummy files.
 
-- _Requirements: E9, E10, E7, E15_
-
-
-- [ ] F2-T3.2 Property Test: Reporting Totality
-
-- Create a test suite that checks if every project root found by `Scanner` has a corresponding row in the `TUI` output.
-
-- Ensure 0 files are lost during the aggregation from worker processes.
+- _Requirements: 1_
 
 
+- [ ] F2-T3.2 Parallel Execution Infrastructure
 
-- [ ] F2-T4,sub_tasks:[{description:. * Optional: Optimize cache read/writes for ultra-large repos.
+- Implement `WorkerPool` in `src/infrastructure/worker_pool.py` using `multiprocessing.Pool`.
 
-- Final system integration and performance benchmarking.
+- Implement `map_parallel(tasks, func)` wrapper with error handling.
 
+- Verification: Use a sleep-heavy mock task to verify that P cores are utilized simultaneously.
 
-- [ ] F2-T4.2. Final Checkpoint: End-to-End Integration
-
-- Run a full scan on a repository with 50+ projects.
-
-- Verify that only changed files are scanned on the second run.
-
-- Confirm TUI displays all results correctly.
-
-- _Requirements: E3, E8, E9_
+- _Requirements: 2_
 
 
-- [ ] F2-T4.3. Property Test: Final Correctness Audit
 
-- Verify zero violations of the established Correctness Properties.
+- [ ] F2-T4. Orchestration & Integration
 
-- Document performance delta vs. single-threaded non-incremental scans.
+- [ ] F2-T4.1 Orchestrator & Quality Gates
+
+- Implement `ScanOrchestrator` in `src/usecases/orchestrator.py`.
+
+- Coordinate Phase 1 logic (Delta Tracking) with Phase 3 logic (Parallel Execution).
+
+- Implement the 'Security Gate Failure Invariant' logic: check results for 'Critical' tags and raise `SecurityGateViolation`.
+
+- Verification: Run integrated scan on a test repo with known 'Critical' dummy vulnerabilities.
+
+- _Requirements: 4_
+
+
+
+- [ ] F2-T5. Final Verification
+
+- [ ] F2-T5.1 Final Property & Integration Testing
+
+- Execute `tests/property/test_parallelism.py` to validate 'Maximum Parallelism Invariant'.
+
+- Execute `tests/property/test_incremental.py` to validate 'Incremental Completeness Invariant'.
+
+- Validate CI pipeline exit codes (0 for pass, non-zero for 'Critical' finds).
+
 
 
 
@@ -131,11 +122,11 @@ The process is divided into four main phases: establishing the incremental cache
 
 
 
-- Tasks marked with (*) are optional optimizations for very large SSDs (e.g., memory-mapped caching).
+- Tasks marked with (*) in descriptions are optional performance optimizations.
 
-- Systematic traceability is maintained by referencing requirement IDs (e.g., E3, E8) and correctness properties.
+- Requirement traceability is maintained via requirement_refs to ensure every user story is addressed.
 
-- Ordering follows a 'Domain-first' approach to ensure the core logic of discovery and partitioning is stable before UI development.
+- Ordering follows a 'Domain-First' approach: core logic and partitioning are built before infrastructure-specific worker pools.
 
-- The 'Split-first' strategy is applied to the Scanner Engine to separate file discovery from file processing logic.
+- Compatibility: The FileSystem adapter must maintain POSIX compliance for containerized CI environments.
 

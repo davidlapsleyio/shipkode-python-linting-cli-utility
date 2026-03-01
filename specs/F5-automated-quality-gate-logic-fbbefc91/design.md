@@ -8,9 +8,9 @@
 
 
 
-The Automated Quality Gate Logic feature transitions PyVisualGuard from a purely interactive TUI tool to a CI-ready security scanner. The strategy is to decouple the evaluation of 'pass/fail' from the detection of vulnerabilities. We introduce a GateEvaluator that processes raw findings against a ThresholdConfig, allowing users to define exactly what constitutes a 'breaking' build. This approach ensures that the scanning engine remains focused on detection, while the gate logic focuses on policy enforcement.
+The design for F5 focuses on transforming the CLI from a passive reporting tool into an active enforcement engine for CI/CD pipelines. This is achieved by introducing a 'Quality Gate' layer that intercepts analysis results and evaluates them against user-defined severity thresholds. The strategy follows an 'Enforce-Then-Export' philosophy, ensuring that even if a report generation fails, the exit code accurately reflects the security posture of the scanned code.
 
-Architecturally, we are adding new Adapters for standardized reporting (JSON and SARIF) and updating the Infrastructure (CLI) to support non-zero exit codes. The existing TUI logic remains untouched and will simply ignore the exit code logic in interactive mode. The incremental change focuses on the CLI interface, providing a machine-machine communication channel that bypasses the human-centric TUI when output flags or thresholds are detected.
+Architecturally, we introduce the Strategy pattern for report formatting to decouple the domain results from specific export schemas like SARIF and JSON. The core analysis logic remains unchanged, but a new evaluation use case is added to synthesize raw scan data into a binary pass/fail decision. This allows for incremental adoption where users can first enable JSON exports and later configure strict exit codes as their pipeline maturity grows.
 
 
 
@@ -22,33 +22,36 @@ Architecturally, we are adding new Adapters for standardized reporting (JSON and
 
 ```mermaid
 graph TD
-    subgraph infrastructure [Infrastructure Layer]
-        CLI[CLI Entry Point]
-        IO[File System / Stdout]
+    subgraph UseCases [Use Cases Layer]
+        QE[Quality Evaluator]
+        RG[Report Generator]
     end
 
-    subgraph adapters [Adapters Layer]
-        ReportExporter[Report Exporter - JSON/SARIF]
-        ConfigLoader[Configuration Loader]
+    subgraph Domain [Domain Layer]
+        GV[Gate Violation Model]
+        GR[Gate Rules Policy]
+        AS[Analysis Result Entity]
     end
 
-    subgraph usecases [Usecases Layer]
-        GateEvaluator[Quality Gate Evaluator]
-        ReportGenerator[Report Generation Logic]
+    subgraph Adapters [Adapters Layer]
+        CLI[CLI Controller]
+        SARIF[SARIF Formatter]
+        JSONF[JSON Formatter]
     end
 
-    subgraph domain [Domain Layer]
-        Thresholds[Threshold Models]
-        GateResult[Gate Status Model]
+    subgraph Infrastructure [Infrastructure Layer]
+        FS[File System Writer]
+        SYSEXIT[Process Exit Handler]
     end
 
-    CLI --> ConfigLoader
-    CLI --> GateEvaluator
-    GateEvaluator --> Thresholds
-    GateEvaluator --> GateResult
-    ReportGenerator --> ReportExporter
-    CLI --> ReportExporter
-
+    CLI --> QE
+    QE --> GR
+    QE --> AS
+    RG --> SARIF
+    RG --> JSONF
+    SARIF --> FS
+    JSONF --> FS
+    QE --> SYSEXIT
 ```
 
 
@@ -59,35 +62,37 @@ graph TD
 
 
 
-### 1. Quality Gate Evaluator (`usecases`)
+### 1. Quality Evaluator (`usecases`)
 
 
 
 
-**Path:** `src/usecases/gate_evaluator.py`
+**Path:** `src/usecases/quality_evaluator.py`
 
 | Responsibility | Description |
 |---|---|
-| Aggregate findings by severity level | |
-| Compare counts against maximum allowable thresholds | |
-| Determine final pass/fail status and exit code recommendation | |
+| Aggregate analysis results across multiple files | |
+| Apply severity threshold filtering logic | |
+| Determine final pass/fail status for the CI environment | |
+| Map domain violations to exit code requirements | |
 
 
 ```python
-class QualityGateEvaluator:
-    def evaluate(self, findings: List[Finding], config: ThresholdConfig) -> GateResult:
-        ...
-        
-class ThresholdConfig(BaseModel):
-    max_critical: int = 0
-    max_high: int = 0
-    fail_on_severity: Severity = Severity.CRITICAL
+class QualityEvaluator:
+    def evaluate(self, result: AnalysisResult, rules: GateRules) -> EvaluationReport:
+        # Returns decision and blocking list
+        pass
+
+class GateRules(BaseModel):
+    fail_on_severity: SeverityLevel = SeverityLevel.CRITICAL
+    fail_on_count: int = 1
+    excluded_rules: List[str] = []
 ```
 
 
 
 
-### 2. Format Exporter (`adapters`)
+### 2. Machine-Readable Exporters (`adapters`)
 
 
 
@@ -96,54 +101,53 @@ class ThresholdConfig(BaseModel):
 
 | Responsibility | Description |
 |---|---|
-| Serialize findings to JSON format | |
-| Map internal findings to SARIF schema | |
-| Write report files to disk safely | |
+| Serialize internal Violation objects to SARIF 2.1.0 | |
+| Serialize internal Violation objects to JSON format | |
+| Manage file I/O operations for export paths | |
+| Ensure schema compliance for external tools | |
 
 
 ```python
-class IReportExporter(Protocol):
-    def export(self, findings: List[Finding], result: GateResult, path: Path) -> None:
-        ...
+interface IReportFormatter:
+    def format(self, results: List[Violation]) -> str
 
-class SarifExporter(IReportExporter):
-    def _map_to_sarif_rule(self, finding: Finding) -> dict:
-        ...
+class SarifFormatter(IReportFormatter):
+    def format(self, results: List[Violation]) -> str:
+        # Implementation of SARIF 2.1.0 schema
+        pass
+
+class JsonFormatter(IReportFormatter):
+    def format(self, results: List[Violation]) -> str:
+        # Native JSON serialization
+        pass
 ```
 
 
 
 
-### 3. CLI Orchestrator (`infrastructure`)
+### 3. CLI Termination Controller (`infrastructure`)
 
 
 
 
-**Path:** `src/infrastructure/cli.py`
+**Path:** `src/infrastructure/cli_controller.py`
 
 | Responsibility | Description |
 |---|---|
-| Parse command line arguments for thresholds and formats | |
-| Execute scan and evaluation workflow | |
-| Terminate process with correct exit codes | |
+| Map evaluation failure to specific OS exit codes | |
+| Orchestrate the flow from scan to export to exit | |
+| Handle configuration overrides for gate thresholds | |
 
 
 ```python
-@app.command()
-def scan(
-    path: Path,
-    json: bool = False,
-    sarif: Optional[Path] = None,
-    fail_on: Severity = Severity.CRITICAL
-):
-    findings = engine.run(path)
-    gate_result = evaluator.evaluate(findings, config)
+def run_pipeline(config: CLIConfig):
+    results = analyzer.scan()
+    report = evaluator.evaluate(results, config.gate_rules)
+    exporter.write(results, config.export_format)
     
-    if sarif:
-        exporter.export(findings, gate_result, sarif)
-        
-    if gate_result.failed:
-        sys.exit(gate_result.exit_code)
+    if report.failed:
+        sys.exit(config.failure_exit_code)
+    sys.exit(0)
 ```
 
 
@@ -169,36 +173,36 @@ No new data models are introduced unless specified in the component descriptions
 
 
 
-### Property F5-P1: Threshold Violation Exit Code Consistency
+### Property F5-P1: Threshold Enforcement Invariant
 
 
 
 
-*For any scan execution, if the number of findings at a specific severity level exceeds the configured threshold, the process exit code must be non-zero.*
+*For any AnalysisResult containing at least one Violation with severity >= gate_rules.fail_on_severity, the QualityEvaluator output must have 'failed' set to True.*
 
-**Validates: Requirements E4, E7, E25**
-
-
-
-### Property F5-P2: SARIF Schema Compliance
+**Validates: Requirements 3**
 
 
 
-
-*For any output generated with the SARIF flag, the resulting file must validate against the official SARIF v2.1.0 JSON schema.*
-
-**Validates: Requirements E10, E25**
-
-
-
-### Property F5-P3: Negative Gate Integrity
+### Property F5-P2: Termination Consistency
 
 
 
 
-*For any scan where the findings count is below all configured thresholds, the exit code must be 0 and the JSON output must record a 'pass' status.*
+*For any execution where QualityEvaluator output 'failed' is True, the CLI process must terminate with the user-defined non-zero exit code.*
 
-**Validates: Requirements Requirement 3**
+**Validates: Requirements 1**
+
+
+
+### Property F5-P3: Schema Compliance
+
+
+
+
+*For any SarifFormatter output, the resulting string must validate against the official SARIF 2.1.0 JSON Schema.*
+
+**Validates: Requirements 2**
 
 
 
@@ -209,8 +213,8 @@ No new data models are introduced unless specified in the component descriptions
 
 | Scenario | Handling |
 |---|---|
-| User provides an invalid path for the JSON/SARIF output file (e.g., no write permissions). | Display clear error message and exit with code 1 (Standard Error) rather than the Gate Error code. |
-| Malformed configuration file provided for threshold settings. | Default to 'Critical' severity threshold and issue a warning if the scan continues. |
+| Invalid severity threshold provided in configuration (e.g., 'URGENT' instead of 'CRITICAL') | Log warning, default to pass/fail based on 'strict' config mode, and continue to exit normally. |
+| Report export directory is not writable during CI execution | Catch I/O error, notify user via stderr, but preserve the calculated exit code based on the Quality Gate logic. |
 
 
 
@@ -219,9 +223,18 @@ No new data models are introduced unless specified in the component descriptions
 
 
 
-The testing strategy utilizes a mix of integration tests and property-based testing. We will use 'pytest' for execution and 'Hypothesis' for property-based tests to ensure thresholds are correctly calculated across arbitrary finding counts. 
+The testing strategy focuses on automated gate verification and schema validation. 
 
-1. Regression Testing: Run existing TUI-based tests to ensure that interactive behavior is not affected by the new exit code logic.
-2. CI Verification: A specific 'pipeline-simulation' test suite will execute the CLI against a matrix of repositories and thresholds, asserting that the '$?' shell variable matches expected gate outcomes.
-3. Property-Based Tests: We will define properties where 'For any finding set S and threshold T, if size(S_critical) > T, exit_code != 0'. Hypothesis will be configured with 200 iterations per test to explore edge cases in threshold boundaries.
-4. Configuration: Tests will use the '@pytest.mark.gate' tag for filtering. Output validation for SARIF will be performed using the 'jsonschema' library against the official v2.1.0 specification.
+Regression Testing: Existing unit tests for scan logic will be run to ensure no regressions in detection capabilities.
+
+CI Verification:
+- Run 'pytest tests/integration/test_quality_gates.py'
+- Validate exit codes using 'mock-shell-check' utility.
+
+Property-Based Testing:
+Using 'hypothesis', we will generate arbitrary lists of Violations with varying severities and verify that for any list where severity >= threshold, the gate evaluator consistently returns failure.
+
+Configuration:
+- Library: pytest, hypothesis
+- Iterations: 1000 for property-based tests
+- Tags: @quality-gate, @sarif-compliance

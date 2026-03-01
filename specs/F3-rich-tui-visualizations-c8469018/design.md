@@ -8,9 +8,9 @@
 
 
 
-The design for 'Rich TUI Visualizations' focuses on transforming the currently sparse CLI output into a high-fidelity, static diagnostic report. The strategy involves integrating the 'Rich' Python library as an adapter to handle complex terminal rendering, including syntax highlighting and table formatting. A key philosophy here is 'High-Fidelity, Zero-Interactivity'; we provide the visual depth of a GUI without the overhead of an interactive loop, ensuring compatibility with CI/CD pipes and standard redirects.
+The design for F3: Rich TUI Visualizations adopts a 'Linear Enhancement' strategy. Instead of building an interactive terminal application (like Textual), we leverage the 'Rich' library to generate a high-fidelity, static stream of information. This philosophy ensures developers get the visual benefit of an IDE—syntax highlighting, color-coded severity, and structured tables—while maintaining the standard terminal 'scrollback' experience. The system does not attempt to manage an event loop or interactive state, fulfilling the requirement for a static report that persists in the terminal buffer.
 
-The implementation follows an incremental approach where the existing CLI engine remains unchanged, but its output stream is intercepted by a new 'Visualizer' use case. This Visualizer coordinates several specialized sub-components: a Report Painter for layout, a Snippet Renderer for syntax highlighting, and a Summary Table Builder for categorization. Deep-linking logic is embedded directly into the diagnostic data models, allowing the TUI to generate clickable paths that minimize context-switching for developers.
+At its core, the implementation refactors the existing output pipeline into a dedicated TUI Adapter layer. This layer takes core domain 'Violation' objects and transforms them into visual components: a Summary Diagnostic Table and Syntax Highlighted Snippets. The logic for categorization and severity-level mapping is encapsulated within these components, keeping the core scanning engine clean and focused on detection rather than presentation. This separation allows us to test the visual formatting logic independently of the linting logic.
 
 
 
@@ -22,33 +22,32 @@ The implementation follows an incremental approach where the existing CLI engine
 
 ```mermaid
 graph TD
-    subgraph "Infrastructure Layer"
-        CLI[CLI Entry Point]
-        Console[Rich Console Manager]
+    subgraph "Adapters Layer (Presentation)"
+        TUI[TUI Controller] --> Table[Summary Table Generator]
+        TUI --> Snippet[Syntax Snippet Formatter]
+        TUI --> Theme[Color Theme Manager]
     end
 
-    subgraph "Adapters Layer (View)"
-        ReportPainter[Report Painter]
-        SnippetRenderer[Code Snippet Renderer]
-        SummaryTable[Summary Table Builder]
-    end
-
-    subgraph "Use Cases Layer"
-        Visualizer[Visualization Orchestrator]
+    subgraph "Usecases Layer"
+        ReportGen[Report Generator] --> ViolationAggregator[Violation Aggregator]
     end
 
     subgraph "Domain Layer"
-        DiagnosticModel[Diagnostic Models]
-        ThemeConfig[Theme Configuration]
+        Violation[Violation Entity]
+        Severity[Severity Value Object]
     end
 
-    CLI --> Visualizer
-    Visualizer --> ReportPainter
-    ReportPainter --> SnippetRenderer
-    ReportPainter --> SummaryTable
-    SnippetRenderer --> Console
-    SummaryTable --> Console
-    Visualizer --> DiagnosticModel
+    subgraph "Infrastructure Layer"
+        RichLib[Rich Library]
+        Pygments[Pygments Highlight Engine]
+    end
+
+    Table --> RichLib
+    Snippet --> Pygments
+    Snippet --> RichLib
+    ReportGen --> TUI
+    ViolationAggregator --> Violation
+
 ```
 
 
@@ -59,86 +58,143 @@ graph TD
 
 
 
-### 1. Visualization Orchestrator (`usecases`)
+### 1. TUI Controller (`adapters`)
 
 
 
 
-**Path:** `src/usecases/visualizer.py`
+**Path:** `src/adapters/tui/controller.py`
 
 | Responsibility | Description |
 |---|---|
-| Coordinate rendering of diagnostics and tables | |
-| Select appropriate rendering strategy based on terminal capabilities | |
-| Aggregate diagnostic statistics for the summary table | |
+| Orchestrate the visual flow of the report | |
+| Interface with the Rich console singleton | |
+| Handle terminal width constraints for responsive wrapping | |
 
 
 ```python
-class Visualizer:\n    def render(self, results: List[Diagnostic], output_format: str) -> None:\n        # Orchestrates the painting process\n        pass
+def render_static_report(violations: List[Violation]) -> None:
+    \"\"\"Orchestrates the printing of the full report to stdout.\"\"\"
+    summary = SummaryTable(violations).build()
+    console.print(summary)
+    
+    for v in violations:
+        snippet = CodeSnippet(v).build()
+        console.print(snippet)
+        console.print(Rule(style=Theme.get_severity_color(v.severity)))
 ```
 
 
 
 
-### 2. Report Painter (`adapters`)
+### 2. Summary Table Generator (`adapters`)
 
 
 
 
-**Path:** `src/adapters/tui/painter.py`
+**Path:** `src/adapters/tui/summary_table.py`
 
 | Responsibility | Description |
 |---|---|
-| Constructing Rich Table objects for error summaries | |
-| Generating Rich Panels for syntax-highlighted code blocks | |
-| Generating deep-link URI strings for file navigation | |
-| Managing terminal color themes and fallback modes | |
+| Aggregate violation counts by category and severity | |
+| Construct the visual Table structure with headers and footers | |
+| Apply color coding to summary cells based on severity thresholds | |
 
 
 ```python
-class ReportPainter:\n    def __init__(self, theme: ThemeConfig):\n        self.console = Console(theme=theme)\n\n    def paint_snippet(self, diagnostic: Diagnostic) -> Panel:\n        # Creates a Panel containing highlighted code\n        pass\n\n    def paint_summary(self, stats: DiagnosticStats) -> Table:\n        # Creates the categorized error table\n        pass
+class SummaryTable:
+    def __init__(self, violations: List[Violation]):
+        self.stats = self._aggregate(violations)
+        
+    def _aggregate(self, violations: List[Violation]) -> Dict[str, Any]:
+        # Returns counts grouped by Category and Severity
+        pass
+
+    def build(self) -> rich.table.Table:
+        # Returns a configured Rich Table object
+        pass
 ```
 
 
 
 
-### 3. Code Snippet Renderer (`adapters`)
+### 3. Syntax Snippet Formatter (`adapters`)
 
 
 
 
-**Path:** `src/adapters/tui/snippet_renderer.py`
+**Path:** `src/adapters/tui/snippet.py`
 
 | Responsibility | Description |
 |---|---|
-| Reading file fragments with surrounding context | |
-| Applying PEP 8 specific highlighting focus to error lines | |
-| Calculating column offsets for visual carets (^) | |
+| Retrieve raw code lines from disk based on violation coordinates | |
+| Apply syntax highlighting using Pygments or Rich highlighters | |
+| Construct a visual Panel with file metadata and line numbers | |
 
 
 ```python
-def get_highlighted_snippet(\n    file_path: Path, \n    line: int, \n    col: int, \n    context: int = 2\n) -> Syntax:\n    # Returns a Rich Syntax object with highlighted focus\n    pass
+class CodeSnippet:
+    def __init__(self, violation: Violation, context_lines: int = 3):
+        self.v = violation
+        self.context = context_lines
+
+    def build(self) -> rich.panel.Panel:
+        code = self._get_highlighted_lines()
+        return Panel(
+            code,
+            title=f\"{self.v.file}:{self.v.line}\",
+            subtitle=f\"[bold red]{self.v.rule_id}[/]\"
+        )
 ```
 
 
 
 
-### 4. Diagnostic Models & Theme Config (`domain`)
+### 4. Theme Manager (`adapters`)
 
 
 
 
-**Path:** `src/domain/models.py`
+**Path:** `src/adapters/tui/theme.py`
 
 | Responsibility | Description |
 |---|---|
-| Hold diagnostic data and error categories | |
-| Provide deep-link string generation logic | |
-| Store user-defined color themes | |
+| Maintain mapping between Domain Severity levels and Terminal Styles | |
+| Provide standard color schemes for different violation categories | |
 
 
 ```python
-@dataclass(frozen=True)\nclass Diagnostic:\n    code: str\n    message: str\n    file_path: Path\n    line: int\n    col: int\n    category: str # e.g., 'Whitespace', 'Naming', 'Complexity'\n    \n    def get_ide_link(self, editor: str = 'vscode') -> str:\n        # Logic to return f'{editor}://file/{self.file_path}:{self.line}'\n        pass
+SEVERITY_COLORS = {
+    Severity.CRITICAL: \"bold red\",
+    Severity.HIGH: \"orange3\",
+    Severity.MEDIUM: \"yellow\",
+    Severity.LOW: \"blue\",
+}
+
+def get_severity_style(severity: Severity) -> str:
+    return SEVERITY_COLORS.get(severity, \"white\")
+```
+
+
+
+
+### 5. Violation Aggregator (`usecases`)
+
+
+
+
+**Path:** `src/usecases/violation_aggregator.py`
+
+| Responsibility | Description |
+|---|---|
+| Transform raw violation lists into counts per category/severity pair | |
+| Sort violations such that Critical/Security items appear first in the list | |
+
+
+```python
+def aggregate_by_category(violations: List[Violation]) -> Dict[Category, Counter]:
+    \"\"\"Groups violations by category and counts their severities.\"\"\"
+    pass
 ```
 
 
@@ -164,36 +220,47 @@ No new data models are introduced unless specified in the component descriptions
 
 
 
-### Property F3-P1: Visual Accuracy Invariant
+### Property F3-P1: Conservation of Violations
 
 
 
 
-*For any diagnostic output, the line number and column reported in the Snippet Renderer MUST correspond exactly to the coordinates provided by the Diagnostic domain model.*
+*For any generated Summary Table, the sum of all displayed violation counts must exactly equal the total number of Violation entities in the input list.*
 
-**Validates: Requirements 1, 4**
-
-
-
-### Property F3-P2: Statistical Consistency Invariant
+**Validates: Requirements 1.1**
 
 
 
-
-*For any set of diagnostics, the sum of counts in the Categorized Diagnostic Summary Table MUST equal the total count of diagnostics generated by the core engine.*
-
-**Validates: Requirements 2**
-
-
-
-### Property F3-P3: Static Output Invariant
+### Property F3-P2: Severity Visual Prominence
 
 
 
 
-*For any execution in a non-interactive terminal environment (TTY=false), the output MUST be a static stream of characters without escape sequence corruption or interactive prompts.*
+*For any Violation with Severity.CRITICAL, the associated UI output (Table row or Code Panel) must contain the ANSI escape sequence for 'bold red' or the designated 'Critical' theme color.*
 
-**Validates: Requirements 3**
+**Validates: Requirements 3.3**
+
+
+
+### Property F3-P3: In-Situ Spatial Accuracy
+
+
+
+
+*For any Code Snippet displayed, the center of the rendered source window must correspond to the line number specified in the Violation entity.*
+
+**Validates: Requirements 2.2**
+
+
+
+### Property F3-P4: Pure Static Output Invariant
+
+
+
+
+*For any execution of the report, the TUI Controller must never invoke interactive terminal listeners or 'alternate screen buffer' commands.*
+
+**Validates: Requirements 4.4**
 
 
 
@@ -204,9 +271,9 @@ No new data models are introduced unless specified in the component descriptions
 
 | Scenario | Handling |
 |---|---|
-| Source file is missing or inaccessible when rendering snippets | The UI will display 'Source unavailable' in the snippet panel if the file was deleted or permissions changed between linting and rendering. |
-| Invalid IDE protocol configuration for deep-linking | The system generates a standard file:// link if the user's preferred IDE protocol is unknown or unsupported. |
-| Terminal window is too narrow for full table/snippet display | The Report Painter detects the terminal width; if restricted, it prioritizes the error message and truncates the code snippet or summary table columns gracefully. |
+| Source file missing or inaccessible during snippet generation (e.g., file deleted since scan) | The Snippet Formatter falls back to displaying a 'Source file not found' message within the panel, preserving the visual layout while informing the user of the error. |
+| Terminal width is too narrow to display the full summary table or code lines. | The TUI Controller detects terminal width and implements 'overflow=fold' for code snippets and 'expand=False' for tables to prevent horizontal scrolling. |
+| Pygments or specific language grammar is missing for a file type. | The highlighters default to 'text' mode with basic ANSI coloring for severity, ensuring the report is still readable without syntax beauty. |
 
 
 
@@ -215,9 +282,18 @@ No new data models are introduced unless specified in the component descriptions
 
 
 
-The testing strategy focuses on visual regression and statistical accuracy. We will utilize 'Pytest' along with 'Rich's' built-in console capturing tools to verify that the output matches expected ANSI-encoded buffers.
+The testing strategy for F3 centers on 'Visual Assertion' and 'Aggregation Accuracy'. 
 
-1. **Regression Testing**: Existing integration tests which check for error counts in plain text will be updated to verify the same counts appear within the new 'Summary Table' structure.
-2. **Property-Based Testing**: Using Hypothesis, we will generate synthetic diagnostic lists to ensure the 'Statistical Consistency Invariant' (Property #2) holds true regardless of category names or error frequencies.
-3. **CI Verification**: Test suites will be run with 'FORCE_COLOR=1' and 'TERM=xterm-256color' to verify high-fidelity rendering, and with 'TERM=dumb' to ensure graceful degradation in restricted environments.
-4. **Configuration**: We will use 'pytest-rich' for enhanced test output and a custom 'Snapshot' fixture to store and compare terminal output frames, allowing us to detect unintended layout shifts in the TUI report.
+### Regression Testing
+We will maintain existing integration tests that verify exit codes and raw JSON output. A mapping layer will be tested to ensure that choosing the '--format tui' flag does not alter the underlying scan results, only their representation.
+
+### CI Verification
+The CI pipeline will include a 'Snapshot Test' using the `pytest-rich` or similar library. This will capture the ANSI-encoded output of a sample scan and compare it against a known 'Gold Standard' snapshot. Any changes to the table structure or snippet layout will trigger a failure, requiring a deliberate update to the snapshot.
+
+### New Property-Based Tests
+We will use 'Hypothesis' to generate lists of violations with random severities and categories.
+- **Aggregation Test**: For any list of violations, the sum of counts in the SummaryTable aggregate must match the input size.
+- **Color Consistency Test**: Ensure that every Violation marked 'Critical' in a generated list results in a 'bold red' format string in the rendered output.
+
+### Configuration
+Tests will run using the 'Rich' library's `Console(force_terminal=True, width=80)` configuration to ensure consistent snapshots regardless of the CI runner's environment. Iterations for property-based tests will be set to 100 to cover various combinations of severity levels.

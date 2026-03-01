@@ -8,9 +8,9 @@
 
 
 
-The implementation follows a domain-driven approach, starting with the foundational data models and theme configurations required to support rich terminal output. By defining the 'Diagnostic' and 'Theme' entities first, we ensure that subsequent rendering logic remains decoupled from specific TUI libraries like 'rich'.
+The implementation follows a domain-driven approach, starting with the Violation Aggregator use-case to prepare the data structures required for visualization. By decoupling the data transformation logic from the UI rendering, we ensure that the summary counts remain consistent regardless of how they are styled. 
 
-The second phase implements the 'Visualization Orchestrator' which serves as the bridge between the core engine results and terminal-specific adapters. Finally, we build out high-fidelity adapters for snippet rendering and diagnostic summaries, concluding with a robust suite of property-based tests to verify visual and statistical accuracy across different terminal environments (TTY vs non-TTY).
+Once the data layer is solid, we move to the Theme Manager and individual visual components (Table and Snippet). This phase focuses on the 'Rich' library integration to fulfill the visual prominence and syntax highlighting requirements. The final phase integrates these components into a non-interactive TUI Controller that adheres to static output constraints, ensuring the terminal buffer remains scrollable as requested.
 
 
 
@@ -20,91 +20,110 @@ The second phase implements the 'Visualization Orchestrator' which serves as the
 
 
 
-- [ ] F3-T1. Domain Model & Theme Definition
+- [ ] F3-T1. Domain Logic & Aggregation Phase
 
-- [ ] F3-T1.1 Extend Domain Models and Theme Config
+- [ ] F3-T1.1 Implement Violation Aggregator Logic
 
-- In src/domain/models.py, create a 'ThemeConfig' dataclass to store ANSI color mappings (e.g., error=red, warning=yellow).
+- Create `ViolationAggregator` class in `src/usecases/violation_aggregator.py`.
 
-- Extend the 'Diagnostic' model to include 'context_lines' (List[str]) and 'file_uri' (str) for IDE deep-linking support.
+- Implement `get_categorized_counts(violations)` returning a typed dictionary of Category -> Severity -> Count.
 
-- Add 'DiagnosticCategory' Enum to support grouped summaries.
+- Implement `get_grouped_by_file(violations)` to facilitate snippet rendering.
 
-- _Requirements: R1, R2, R4_
+- Unit test with edge cases (empty lists, singular violations).
+
+- _Requirements: F3.1, F3.3_
 
 
+- [ ] F3-T1.2 Verify Violation Conservation Property
 
-- [ ] F3-T2. Use Case Orchestration
+- Create property test `test_conservation_of_violations`.
 
-- [ ] F3-T2.1 Implement Visualization Orchestrator
+- Input: Randomly generated lists of Violation entities using Hypothesis or similar.
 
-- Create src/usecases/visualizer.py with a 'VisualizationOrchestrator' class.
-
-- Implement 'generate_report(diagnostics: List[Diagnostic])' method.
-
-- Logic should handle the logic for calculating aggregate counts by category before passing data to adapters.
-
-- _Requirements: R2, R3_
+- Assertion: Sum of entries in Aggregator output equals length of input list.
 
 
 
-- [ ] F3-T3. Internal Logic Checkpoint
+- [ ] F3-T2. Component & Formatting Phase
 
-- [ ] F3-T3.1 Checkpoint: Orchestrator Logic Validation
+- [ ] F3-T2.1 Implement Severity-Based Theme Manager
 
-- Write unit tests for VisualizationOrchestrator to ensure categories are aggregated correctly.
+- Implement `ThemeManager` in `src/adapters/tui/theme.py`.
 
-- Verify that Diagnostic objects contain valid line/column metadata.
+- Define a `StyleSheet` class mapping `Severity` levels to ANSI colors (e.g., Critical: 'bold red', Error: 'bright_red').
 
-- _Requirements: R2_
+- Verification: Print a color swatch to verify theme readability on dark/light backgrounds.
 
-
-
-- [ ] F3-T4. TUI Adapter Development
-
-- [ ] F3-T4.1 Develop Syntax-Highlighted Snippet Renderer
-
-- Create src/adapters/tui/snippet_renderer.py.
-
-- Implement 'SnippetRenderer.render()' using syntax highlighting logic.
-
-- Ensure line numbers and pointers (^) are accurately calculated based on Diagnostic coordinates.
-
-- _Requirements: R1_
+- _Requirements: F3.3_
 
 
-- [ ] F3-T4.2 Develop Diagnostic Summary Table & Deep-Linking
+- [ ] F3-T2.2 Create Summary Table Component
 
-- Create src/adapters/tui/painter.py.
+- Create `SummaryTableGenerator` in `src/adapters/tui/summary_table.py`.
 
-- Implement 'SummaryTablePainter' to generate a static table of error counts using the 'ThemeConfig'.
+- Use `rich.table.Table` to render the aggregated data from Phase 1.
 
-- Implement 'DeepLinkFormatter' to generate 'file://' URI schemes compatible with modern terminals (VS Code/PyCharm).
+- Apply colors from `ThemeManager` to the 'Severity' column.
 
-- _Requirements: R2, R4_
+- _Requirements: F3.1, F3.3_
 
 
-- [ ] F3-T4.3 Implement Static Output and TTY Detection
+- [ ] F3-T2.3 Develop Syntax Highlighted Snippets
 
-- Add logic to detect TTY status (sys.stdout.isatty()).
+- Create `SyntaxSnippetFormatter` in `src/adapters/tui/snippet.py`.
 
-- Force 'no_color' and 'plain_text' modes if TTY is false or if NO_COLOR env var is set.
+- Use `rich.syntax.Syntax` to load file segments.
 
-- _Requirements: R3_
+- Calculate window bounds: [violation.line - 2, violation.line + 2] to center context.
+
+- Highlight the specific error line using Rich's `highlight_lines` parameter.
+
+- _Requirements: F3.2_
 
 
 
-- [ ] F3-T5. Final Validation Checkpoint
+- [ ] F3-T3. Integration & Validation Phase
 
-- [ ] F3-T5.1 Property-Based Verification
+- [ ] F3-T3.1 Integrate TUI Controller
 
-- Property Test: Pass 100 random diagnostics and assert that the summary table sum equals 100.
+- Create `TUIController` in `src/adapters/tui/controller.py`.
 
-- Property Test: Mock a non-interactive terminal and assert that no ESC [ codes are present in output.
+- Implement `render_report(violations)` which sequentially prints the Table followed by Snippets.
 
-- Property Test: Verify that the '^' character in snippets aligns exactly with the 'column' attribute of the Diagnostic.
+- CONSTRAINT: Must use `rich.console.Console(force_terminal=True)` and avoid `console.alternate_screen()`.
 
-- _Requirements: R1, R2, R3_
+- _Requirements: F3.4_
+
+
+- [ ] F3-T3.2 Property Test: Static Output Invariant
+
+- Test script that captures stdout.
+
+- Verify total absence of escape sequences like `\e[?1049h` (enter alternate buffer) or mouse tracking.
+
+- Ensure terminal scrollback is preserved after execution.
+
+
+- [ ] F3-T3.3 Property Test: Severity Prominence
+
+- Create `test_severity_visual_prominence`.
+
+- Render a CRITICAL violation to a virtual string console.
+
+- Regex check for standard ANSI 'bold red' codes or the specific hex/name defined in the Theme Manager.
+
+
+
+- [ ] F3-T4. Checkpoint: Final Acceptance
+
+- [ ] F3-T4.1 End-to-End Visual Checkpoint
+
+- Execute full report generation against the codebase itself.
+
+- Verify counts match expected tool output.
+
+- Manual check: Scroll through terminal buffer to verify layout is static and formatted correctly.
 
 
 
@@ -114,11 +133,11 @@ The second phase implements the 'Visualization Orchestrator' which serves as the
 
 
 
-- Tasks marked with (*) are optional optimizations for CI environments.
+- Tasks marked with (*) are optional aesthetic enhancements.
 
-- Requirements Traceability: Every sub-task is mapped to a specific requirement (R1-R4) to ensure feature parity.
+- Requirement traceability is maintained via IDs (e.g., F3.1) to ensure every feature request has a corresponding code path.
 
-- Ordering Constraint: Domain models (Phase 1) must be finalized before adapters (Phase 3) to ensure type safety across the visualizer.
+- The 'Split-First' strategy is applied to the adapter layer to prevent the TUI controller from becoming a 'God Object'.
 
-- Backward Compatibility: The new TUI output will be triggered via a flag; the default stdout behavior remains unchanged for legacy scripts.
+- Compatibility: All ANSI output remains compatible with standard xterm-256color terminals without requiring GPU acceleration.
 

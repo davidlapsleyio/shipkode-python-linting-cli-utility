@@ -8,9 +8,9 @@
 
 
 
-This plan implements a robust 'Quality Gate' system by first defining the domain models for thresholds and evaluation logic, then building the reporting infrastructure, and finally integrating these into the CLI. We prioritize the 'Quality Gate Evaluator' domain service to ensure core logic is independent of the delivery mechanism (CLI or JSON).
+The implementation strategy follows a domain-driven approach, starting with the core gate logic and models before moving to external reporting and CLI integration. We first define the 'QualityGate' domain model and the 'QualityEvaluator' service to establish the business logic for 'failure' independently of how it is reported or handled by the OS. This ensures the core logic is testable without side effects.
 
-The strategy follows a split-first approach, ensuring that the reporting logic is isolated from the CLI orchestration. We use a 'Domain-Driven' sequence where the gate logic is built and verified with unit tests before the CLI is modified to support non-zero exit codes. This ensures that the 'Negative Gate Integrity' property is maintained throughout the development lifecycle.
+Once the evaluation logic is solid, we implement the 'Machine-Readable Exporters' to handle data persistence and dashboard integration. Finally, we wire these components into the 'CLI Termination Controller', which acts as the infrastructure layer responsible for converting domain 'failures' into system exit codes. This order ensures that the most critical logic (deciding if a build is safe) is prioritized and verified before addressing delivery formats or process signals.
 
 
 
@@ -20,110 +20,133 @@ The strategy follows a split-first approach, ensuring that the reporting logic i
 
 
 
-- [ ] F5-T1. Domain Logic and Gate Models
+- [ ] F5-T1. Domain Logic: Quality Gate Evaluation
 
-- [ ] F5-T1.1 Define Domain Gate Models
+- [ ] F5-T1.1 Define Quality Gate Domain Models
 
-- Create `src/domain/gate_models.py`.
+- Create `src/domain/quality_gate.py` to hold the `GateRule` and `QualityStatus` data classes.
 
-- Implement `ThresholdConfig` dataclass with fields for 'critical', 'high', 'medium', and 'low'.
+- Define `Severity` enum (INFO, LOW, MEDIUM, HIGH, CRITICAL).
 
-- Implement `GateResult` dataclass to store the pass/fail status and a summary of violations.
-
-- Verification: Unit test that `ThresholdConfig` can be instantiated from a dictionary.
+- Define `GateConfiguration` to hold `fail_on_severity` and `custom_exit_code` mappings.
 
 - _Requirements: 3_
 
 
-- [ ] F5-T1.2 Implement Gate Evaluator Service
+- [ ] F5-T1.2 Implement QualityEvaluator Service
 
-- Create `src/usecases/gate_evaluator.py`.
+- Create `src/usecases/quality_evaluator.py`.
 
-- Implement `QualityGateEvaluator` class.
+- Implement `QualityEvaluator.evaluate(violations, config)` logic.
 
-- Add method `evaluate(findings: List[Finding], config: ThresholdConfig) -> GateResult`.
+- Logic must iterate through violations and set `is_failed=True` if any violation severity >= `config.fail_on_severity`.
 
-- Logic must aggregate counts per severity and compare against thresholds.
-
-- Verification: Unit tests with mock findings to ensure 'pass' on zero findings and 'fail' on threshold overflow.
+- Return a `QualitySummary` object containing the failure status and counts by severity.
 
 - _Requirements: 3_
 
 
+- [ ] F5-T1.3 Property Test: Threshold Enforcement
 
-- [ ] F5-T2. Reporting and Format Adapters
+- Create `tests/properties/test_gate_properties.py`.
 
-- [ ] F5-T2.1 Implement Machine-Readable Exporters
+- Use Hypothesis to generate `AnalysisResult` objects with varying severity levels.
+
+- Assert that the evaluator consistently marks results as failed when the threshold is met or exceeded.
+
+
+
+- [ ] F5-T2. Adapters: Machine-Readable Reporting
+
+- [ ] F5-T2.1 Implement JSON Report Formatter
 
 - Create `src/adapters/report_exporter.py`.
 
-- Implement `JsonExporter` class to output the standard internal report format.
+- Implement `JSONFormatter` class to serialize the `AnalysisResult` and `QualitySummary` to a standard JSON object.
 
-- Implement `SarifExporter` class using a template or library to map internal `Finding` objects to SARIF v2.1.0 JSON schema.
-
-- Verification: Run generated SARIF outputs through an online JSON schema validator against the official v2.1.0 schema.
+- Ensure all fields from the domain model are mapped.
 
 - _Requirements: 2_
 
 
-- [ ] F5-T2.2 Integrate Gate Status into Exporters
+- [ ] F5-T2.2 Implement SARIF 2.1.0 Formatter
 
-- Ensure `GateResult` status ('pass'/'fail') is included in the JSON/SARIF output metadata.
+- Implement `SarifFormatter` class in `src/adapters/report_exporter.py`.
 
-- Verification: Assert that the 'pass' status is correctly recorded in the JSON output when thresholds are met.
+- Map internal violations to SARIF `runs`, `results`, and `rules` objects.
+
+- Ensure `level` mapping (e.g., CRITICAL -> 'error', LOW -> 'note').
+
+- _Requirements: 2_
+
+
+- [ ] F5-T2.3 Property Test: SARIF Schema Compliance
+
+- Create `tests/integration/test_sarif_compliance.py`.
+
+- Instantiate `SarifFormatter` with sample data.
+
+- Validate the output against the official SARIF 2.1.0 JSON schema using `jsonschema` library.
 
 - _Requirements: 2_
 
 
 
-- [ ] F5-T3. Checkpoint: Internal Logic Validation
+- [ ] F5-T3. Intermediate Checkpoint
 
-- [ ] F5-T3.1 Run Unit Tests for Gate Logic and Exporters
+- [ ] F5-T3.1 Checkpoint: Evaluation & Export Logic
 
-- Execute `pytest tests/unit/gate_evaluator_test.py`.
+- Execute all unit tests for `QualityEvaluator` and `ReportExporter`.
 
-- Execute `pytest tests/unit/exporter_test.py`.
-
-- Verify 100% coverage on gate logic.
+- Verify coverage for all severity edge cases (at threshold, above, below).
 
 
 
-- [ ] F5-T4. CLI Integration and Orchestration
+- [ ] F5-T4. Infrastructure: CLI & Process Control
 
-- [ ] F5-T4.1 Update CLI Command Plane
+- [ ] F5-T4.1 Update CLI Controller with Evaluation Flow
 
-- Modify `src/infrastructure/cli.py` to add `--thresholds` (kv-pair), `--format` (json/sarif), and `--output-file` flags.
+- Update `src/infrastructure/cli_controller.py`.
 
-- Use `argparse` or `click` to parse these into `ThresholdConfig`.
+- Integrate the `QualityEvaluator` into the main execution flow.
 
-- Verification: Run `pyvisualguard --help` to confirm new flags exist.
+- Ensure that if `evaluator.evaluate()` returns a failure status, the controller retrieves the configured `exit_code`.
 
-- _Requirements: 2, 3_
+- _Requirements: 1_
 
 
-- [ ] F5-T4.2 Implement Exit Code Orchestration
+- [ ] F5-T4.2 Implement Exit Code Enforcement
 
-- Update `src/infrastructure/cli.py` to invoke `QualityGateEvaluator` after findings are generated.
+- Implement the final `sys.exit(code)` call in the `cli_controller`.
 
-- Call `sys.exit(1)` if `GateResult.is_failed` is true; otherwise `sys.exit(0)`.
+- Ensure that this is the last operation after all reports (JSON/SARIF) have been written to disk.
 
-- Verification: Execute CLI against a known 'insecure' test directory and confirm `$?` is 1.
+- _Requirements: 1_
+
+
+- [ ] F5-T4.3 Property Test: Termination Consistency
+
+- Create `tests/integration/test_cli_termination.py`.
+
+- Use `subprocess` or `py.test`'s `capsys` to run the CLI with a mock scan result that triggers a failure.
+
+- Assert that the exit code matches the defined threshold configuration.
 
 - _Requirements: 1_
 
 
 
-- [ ] F5-T5. Final Checkpoint: Property Validation
+- [ ] F5-T5. Final Verification
 
-- [ ] F5-T5.1 Property-Based Verification
+- [ ] F5-T5.1 Final Checkpoint: E2E Quality Gate Integration
 
-- Create `tests/property/test_gate_properties.py`.
+- Run a full scan against a known "vulnerable" target.
 
-- Test 'Threshold Violation Exit Code Consistency' by sweeping across finding counts.
+- Verify that a SARIF file is produced, it is valid, and the CLI returns a non-zero exit code.
 
-- Test 'Negative Gate Integrity' by running scans against an empty directory.
+- Repeat with a "clean" target and verify a 0 exit code.
 
-- Test 'SARIF Schema Compliance' by validating actual CLI-generated files.
+- _Requirements: 1 status="ready", 2 status="ready", 3 status="ready"_
 
 
 
@@ -133,11 +156,11 @@ The strategy follows a split-first approach, ensuring that the reporting logic i
 
 
 
-- Tasks marked with (*) are optional optimizations for the CLI user experience.
+- Tasks marked with (*) are optional optimizations for the dev environment and not strictly required for MVP.
 
-- Requirement references (e.g., [1], [2]) ensure every feature requested by the DevOps Lead is mapped to a code change.
+- Traceability: requirement_refs ensure that every functional need from the user story is mapped to a specific implementation step.
 
-- The 'Domain-First' ordering ensures that the logic for 'what' constitutes a failure is decoupled from 'how' it is reported (CLI vs JSON).
+- Ordering Constraints: Domain models for gates must be defined first to establish the 'contract' between the evaluator and the CLI.
 
-- Compatibility: The SARIF exporter must maintain compatibility with GitHub Advanced Security and other standard SARIF consumers.
+- Compatibility: The SARIF exporter uses the 2.1.0 standard to ensure compatibility with GitHub Advanced Security and other industry dashboards.
 

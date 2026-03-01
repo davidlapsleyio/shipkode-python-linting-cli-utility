@@ -8,11 +8,9 @@
 
 
 
-The Large-Scale Repository Scanner (F2) is designed to transform the current single-project logic into an organization-wide compliance engine. The core philosophy is 'Discovery before Execution'—the system will recursively walk the file system to identify project boundaries (e.g., directories containing .git or specific language config files) before initiating any linting. This prevents nested scans from colliding and allows for smarter workload distribution. 
+The Large-Scale Repository Scanner (F2) is designed to handle massive monorepos by shifting from a sequential, single-threaded discovery model to a parallelized, delta-aware architecture. The core philosophy centers on 'Work Minimization'—if a file hasn't changed, the scanner shouldn't touch it. This is achieved through a robust FileSystem Adapter that implements incremental progress tracking using file fingerprints (mtime and size). 
 
-Strategically, we shift from a sequential file-by-file approach to a parallelized task-based framework. We introduce a shared 'Result Cache' to support incremental scanning, which ensures that only modified files are processed, significantly reducing latency for developers. The existing linting logic remains encapsulated; it is simply invoked as a worker task by the new Task Dispatcher. 
-
-The reporting mechanism moves from stdout logs to a structured TUI/Aggregator model. This allows the system to handle thousands of violations across hundreds of projects without overwhelming the user, providing a high-level 'quality gate' dashboard while still allowing deep-dives into specific project failures.
+The system utilizes a 'Producer-Consumer' parallelization strategy. A main process performs rapid file discovery and partitions the work into balanced chunks, which are then consumed by a pool of worker processes. This approach minimizes the Global Interpreter Lock (GIL) contention and ensures that multi-core systems are fully saturated. 100% coverage is guaranteed by a recursive discovery engine that ignores only explicitly excluded directories (like .git or venv), while security quality gates are enforced at the aggregation layer of the Orchestrator, ensuring that a 'Critical' finding in any sub-project blocks the entire pipeline.
 
 
 
@@ -24,28 +22,30 @@ The reporting mechanism moves from stdout logs to a structured TUI/Aggregator mo
 
 ```mermaid
 graph TD
-    subgraph UseCases [Use Case Layer]
-        Scanner[Repo Scanner Engine]
-        Dispatcher[Task Dispatcher]
+    subgraph "Adapters Layer"
+        FS[FileSystem Scanner]
+        CS[Cache Provider]
+        WR[Worker Pool]
     end
 
-    subgraph Adapters [Adapter Layer]
-        FS[File System Discovery]
-        Git[Git Change Tracker]
-        Terminal[TUI Reporter]
+    subgraph "Use Case Layer"
+        OC[Orchestrator]
+        CH[Change Detector]
+        TP[Task Partitioner]
     end
 
-    subgraph Infrastructure [Infrastructure Layer]
-        Pool[Worker Pool / Ray]
-        Cache[SQLite Result Store]
+    subgraph "Domain Layer"
+        RM[Repo Model]
+        SC[Scan Result]
     end
 
-    FS --> Scanner
-    Git --> Scanner
-    Scanner --> Dispatcher
-    Dispatcher --> Pool
-    Pool --> Cache
-    Cache --> Terminal
+    FS --> OC
+    CS --> CH
+    CH --> OC
+    OC --> TP
+    TP --> WR
+    WR --> SC
+    SC --> OC
 ```
 
 
@@ -56,96 +56,95 @@ graph TD
 
 
 
-### 1. Scanner Engine (`usecases`)
+### 1. Scan Orchestrator (`usecases`)
 
 
 
 
-**Path:** `src/usecases/scanner.py`
+**Path:** `src/usecases/orchestrator.py`
 
 | Responsibility | Description |
 |---|---|
-| Recursive project boundary identification | |
-| Change detection via Git integration | |
-| Construction of discrete ScanTask objects | |
+| Coordinate between discovery and partitioning modules | |
+| Aggregate results from multiple worker processes | |
+| Manage the overall scan lifecycle and state transition | |
 
 
 ```python
-class IScanner(Protocol):
-    async def scan_root(self, path: Path) -> List[ScanTask]: ...
-
-class ScanTask(NamedTuple):
-    project_id: str
-    files: List[Path]
-    config: ProjectConfig
+class IScanOrchestrator(Protocol):
+    async def run_scan(self, root_path: Path) -> ScanSummary:
+        \"\"\"Executes a full or incremental scan based on workspace state\"\"\"
 ```
 
 
 
 
-### 2. Task Dispatcher (`usecases`)
+### 2. Task Partitioner (`usecases`)
 
 
 
 
-**Path:** `src/usecases/dispatcher.py`
+**Path:** `src/usecases/partitioner.py`
 
 | Responsibility | Description |
 |---|---|
-| Parallel execution management | |
-| Workload partitioning for CPU efficiency | |
-| Streaming results back to the aggregator | |
+| Calculate optimal distribution of files across CPU cores | |
+| Minimize idle time during parallel execution | |
+| Handle project-level grouping to maintain logical context if needed | |
 
 
 ```python
-class IDispatcher(Protocol):
-    async def map_parallel(self, tasks: List[ScanTask], worker_fn: Callable) -> AsyncIterator[ScanResult]: ...
+def partition_tasks(files: List[FileInfo], core_count: int) -> List[List[FileInfo]]:
+    \"\"\"Splits files into N balanced chunks based on size and count\"\"\"
 ```
 
 
 
 
-### 3. TUI Reporter (`adapters`)
+### 3. FileSystem Adapter (`adapters`)
 
 
 
 
-**Path:** `src/adapters/tui_reporter.py`
+**Path:** `src/adapters/filesystem.py`
 
 | Responsibility | Description |
 |---|---|
-| Real-time aggregation of multi-project results | |
-| Formatting scan violations for readability | |
-| Managing live UI lifecycle in the terminal | |
+| Recursive file discovery using memory-efficient generators | |
+| Filtering based on .gitignore and style-guide exclusions | |
+| Delta tracking via file fingerprinting (mtime/hash) | |
 
 
 ```python
-class TUIReporter:
-    def update(self, result: ScanResult): ...
-    def render_summary(self): ...
+class FileScanner:
+    def get_python_files(self, root: Path) -> Generator[FileInfo, None, None]:
+        \"\"\"Recursively yields python files avoiding symlink loops\"\"\"
+    
+    def get_changed_files(self, files: List[FileInfo], cache: ScanCache) -> List[FileInfo]:
+        \"\"\"Filters files based on checksum/mtime delta\"\"\"
 ```
 
 
 
 
-### 4. Incremental Result Cache (`infrastructure`)
+### 4. Parallel Execution Pool (`infrastructure`)
 
 
 
 
-**Path:** `src/infrastructure/cache.py`
+**Path:** `src/infrastructure/worker_pool.py`
 
 | Responsibility | Description |
 |---|---|
-| Staging file hashes for change detection | |
-| Persisting results across CLI invocations | |
-| Garbage collection of stale cache entries | |
+| Manage lifecycle of worker processes | |
+| Execute security/style checks in parallel isolation | |
+| Aggregate stdout/stderr from concurrent tasks | |
 
 
 ```python
-class ResultCache:
-    def get_valid_files(self, project: str, files: List[Path]) -> List[Path]: ...
-    def upsert_results(self, results: List[ScanResult]): ...
+class ParallelWorkerPool:
+    def execute_batch(self, chunks: List[List[FileInfo]], task_fn: Callable) -> List[TaskResult]:
+        \"\"\"Maps task_fn over chunks across N processes\"\"\"
 ```
 
 
@@ -171,36 +170,36 @@ No new data models are introduced unless specified in the component descriptions
 
 
 
-### Property F2-P1: Incremental Correctness
+### Property F2-P1: Incremental Completeness Invariant
 
 
 
 
-*For any file F in directory Tree T, F is processed if and only if F has changed since the last recorded Success(F) or it is the first execution.*
+*For any scan execution, the set of files processed must equal the union of files modified since the last recorded timestamp and files that have never been successfully scanned.*
 
 **Validates: Requirements 3**
 
 
 
-### Property F2-P2: Parallel Efficiency
+### Property F2-P2: Maximum Parallelism Invariant
 
 
 
 
-*For any project P containing N files, the execution time T satisfy T <= (ProjectProcessingTime / NumWorkers) + Overhead.*
+*For any repository with N files and P available processor cores where N > P, the scan must utilize P active processes until the work queue is exhausted.*
 
 **Validates: Requirements 2**
 
 
 
-### Property F2-P3: Reporting Totality
+### Property F2-P3: Security Gate Failure Invariant
 
 
 
 
-*For any repository scan, every project root identified by the Discovery module must have a corresponding entry in the final Aggregated Report.*
+*For any scan result containing a 'Critical' severity vulnerability, the Orchestrator must return a non-zero exit code and stop the CI pipeline.*
 
-**Validates: Requirements 1, 4**
+**Validates: Requirements 4**
 
 
 
@@ -211,9 +210,9 @@ No new data models are introduced unless specified in the component descriptions
 
 | Scenario | Handling |
 |---|---|
-| Permission denied or IO error in a specific sub-directory | The Scanner marks the specific project as 'Errored' in the TUI, logs the stack trace to a hidden debug file, and continues scanning other projects. |
-| Worker process crash or SIGINT during large scan | The Dispatcher uses a 'Graceful Shutdown' signal, flushing the Incremental Cache to disk before exit so the next run picks up exactly where it stopped. |
-| TUI render failure or incompatible terminal environment | The TUI falls back to a simplified 'Plain Text' mode for CI environments or terminals without TUI support. |
+| File Permission Denied / IO Error during discovery | The Orchestrator catches the exception, logs the file path as 'Error', and continues scanning remaining files to ensure a single corrupt file doesn't block the whole repo. |
+| Worker process crashes due to Memory Limit (OOM) | The Worker Pool detects the process exit, restarts the worker process, and marks all tasks in that chunk as 'Failed'. |
+| Cache file is corrupted or version mismatch | The Orchestrator falls back to a full scan of all files and logs a warning for the user. |
 
 
 
@@ -222,15 +221,14 @@ No new data models are introduced unless specified in the component descriptions
 
 
 
-The testing strategy centers on 'Scaling Invariants' and 'Incremental Correctness'. 
+The testing strategy focuses on high-volume simulation and state-based verification. Regression testing will utilize the existing style-check test suite, but wrapped in a 'ParallelRunner' test harness to ensure that concurrent execution doesn't introduce race conditions in result reporting. 
 
-Regression Testing: Existing unit tests for specific linters will be executed within a mock ProjectTask to ensure that the parallel wrapper doesn't interfere with linting logic. CI verification will run the scanner against its own repository to ensure the TUI and Dispatcher work in a real environment.
+CI verification will be performed using a 10,000-file 'synthetic monorepo' generated during the build setup. We will use `pytest-xdist` for running the tests themselves, but the system's own parallelization will be verified by inspecting the `ScanSummary` metadata.
 
-New Property-Based Tests: We will use Hypothesis to generate arbitrary directory structures with varying depths and file counts. 
-- A 'Discovery Invariant' test will verify that every 'project marker' placed in the generated tree is correctly identified. 
-- An 'Idempotency' test will verify that running the scanner twice on an unchanged tree results in zero files being processed in the second pass.
+Property-based testing (using Hypothesis) will be employed for the Task Partitioner. Specifically, we will generate random lists of file sizes and core counts to verify that the 'Maximum Parallelism Invariant' holds (i.e., that work is distributed as evenly as possible). 
 
-CI Configuration:
-- Library: `pytest` with `pytest-asyncio` and `hypothesis`.
-- Iterations: 100 for property-based tests.
-- Tag Format: `@pytest.mark.scale` for long-running recursive scan tests.
+Testing Configuration:
+- Framework: pytest with hypothesis
+- Iterations for property tests: 200
+- Tagging: All scale tests will be tagged `@pytest.mark.performance` to allow separation from fast unit tests.
+- Environment: Tests will be run in a Docker container limited to 2 CPUs to verify ceiling-limit handling.

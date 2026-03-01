@@ -8,9 +8,9 @@
 
 
 
-The Concurrent Analysis Worker Hub transitions the linter from a sequential execution model to a high-performance multiprocessing architecture. The core strategy utilizes a 'Master-Worker' pattern where the main process focuses on orchestration, progress reporting, and result aggregation, while independent worker processes handle the CPU-intensive code analysis. This approach directly addresses CI bottlenecks by saturating available CPU cores, especially in 'mega-repos'.
+The Concurrent Analysis Worker Hub adopts a 'Master-Worker' architectural pattern to address the scalability requirements of large-scale codebases. The core strategy involves partitioning the file scan list into discrete task units that are distributed across a pool of Node.js worker threads. This approach ensures that we leverage multi-core hardware without the overhead of full process forking, while maintaining a shared-nothing memory architecture within workers to prevent race conditions during the analysis phase.
 
-The design prioritizes isolation and immutability; tasks are dispatched as read-only payloads, and results are returned via inter-process communication (IPC) as serialized data structures. While the internal execution engine changes significantly, the domain logic for linting remains identical to ensure consistency between local single-file runs and bulk CI scans. We use a dynamic chunking algorithm to ensure load balancing across cores, preventing the 'long-tail' problem where one slow task stalls the entire pipeline.
+The transition to concurrent processing is managed incrementally: the existing single-threaded analysis engine is encapsulated into a 'WorkerTask' unit, allowing the underlying linting logic to remain unchanged while the orchestration layer handles the parallel distribution. The ResultAggregator then performs a thread-safe reduction of individual worker outputs into a single unified report. This philosophy prioritizes 'Correctness over Performance,' ensuring that parallelizing the work never changes the linting outcome compared to a sequential run.
 
 
 
@@ -21,34 +21,25 @@ The design prioritizes isolation and immutability; tasks are dispatched as read-
 
 
 ```mermaid
-graph TD
-    subgraph infrastructure [Infrastructure Layer]
-        CLI[CLI Entrypoint]
-        ProgressBar[Console Progress Bar]
+graph TB
+    subgraph UseCases [Use Case Layer]
+        UC[AnalysisCoordinator] -->|DispatchesTask| WH[WorkerHub]
+        UC -->|Aggregates| RA[ResultAggregator]
     end
 
-    subgraph adapters [Adapters Layer]
-        Pool[Multiprocessing Pool Adapter]
-        Reporter[Consolidated Report Generator]
+    subgraph Adapters [Adapter Layer]
+        WH -->|Spawns| PW[ParallelWorker]
+        PW -->|Reads| FS[FileSystemAdapter]
+        PW -->|Invokes| LP[LLMProvider]
     end
 
-    subgraph usecases [Use Cases Layer]
-        Orchestrator[Parallel Execution Orchestrator]
-        TaskDistributor[Task Distribution Logic]
+    subgraph Infrastructure [Infrastructure Layer]
+        WH -->|Configures| CP[ConcurrencyPool]
+        CP -->|Uses| NC[Node Worker_Threads]
     end
 
-    subgraph domain [Domain Layer]
-        Types[Concurrency Types & Models]
-        AnalysisResult[Linter Result Model]
-    end
+    RA -->|Consolidates| DR[DomainModels: AnalysisReport]
 
-    CLI --> Orchestrator
-    Orchestrator --> TaskDistributor
-    TaskDistributor --> Pool
-    Pool --> ProgressBar
-    Pool --> AnalysisResult
-    AnalysisResult --> Reporter
-    Reporter --> CLI
 ```
 
 
@@ -59,79 +50,94 @@ graph TD
 
 
 
-### 1. Parallel Execution Orchestrator (`usecases`)
+### 1. AnalysisCoordinator (`usecases`)
 
 
 
 
-**Path:** `src/usecases/parallel_orchestrator.py`
+**Path:** `src/usecases/analysis_coordinator.ts`
 
 | Responsibility | Description |
 |---|---|
-| Initializing the Multiprocessing Pool based on hardware availability | |
-| Partitioning the task queue for optimal load balancing | |
-| Supervising worker health and resource consumption | |
-| Aggregating partial results into a final consolidated state | |
+| Partition file lists for distribution | |
+| Manage lifecycle of worker execution | |
+| Trigger result aggregation upon completion | |
 
 
 ```python
-class ParallelOrchestrator:
-    def __init__(self, worker_count: int, reporter: IProgressReporter):
-        self.worker_count = worker_count
-        self.reporter = reporter
+export interface ICoordinator {
+  executeParallel(files: string[]): Promise<AnalysisReport>;
+}
 
-    async def execute_parallel(self, tasks: List[AnalysisTask]) -> List[AnalysisResult]:
-        # Implementation of process pool management
-        pass
+class AnalysisCoordinator implements ICoordinator {
+  constructor(
+    private hub: IWorkerHub,
+    private aggregator: IResultAggregator
+  ) {}
+}
 ```
 
 
 
 
-### 2. Multiprocessing Pool Adapter (`adapters`)
+### 2. WorkerHub (`adapters`)
 
 
 
 
-**Path:** `src/adapters/concurrency/mp_pool_adapter.py`
+**Path:** `src/adapters/worker_hub.ts`
 
 | Responsibility | Description |
 |---|---|
-| Mapping high-level tasks to low-level process fork/spawn calls恢复 | |
-| Managing IPC for progress updates and result gathering | |
-| Handling OS-specific signal propagation (e.g., SIGINT) | |
+| Initialize worker thread pool | |
+| Load-balance tasks across cores | |
+| Handle container-specific CPU limits (cgroups) | |
 
 
 ```python
-class WorkerPoolAdapter(IWorkerPool):
-    def run_map_async(self, func: Callable, items: Iterable) -> AsyncIterator[Result]:
-        with Pool(processes=self.cpu_count) as pool:
-            for result in pool.imap_unordered(func, items):
-                yield result
+export interface IWorkerHub {
+  dispatch(batch: AnalysisTask[]): Promise<AnalysisResult[]>;
+  getCapacity(): number;
+}
+
+export type AnalysisTask = {
+  filePath: string;
+  config: LinterConfig;
+};
 ```
 
 
 
 
-### 3. Progress Tracking Monitor (`infrastructure`)
+### 3. ResultAggregator (`usecases`)
 
 
 
 
-**Path:** `src/infrastructure/progress_monitor.py`
+**Path:** `src/usecases/result_aggregator.ts`
 
 | Responsibility | Description |
 |---|---|
-| Rendering real-time progress bars to the console | |
-| Providing visual feedback on throughput (tasks/sec) | |
-| Integrating with the Orchestrator for task lifecycle events恢复 | |
+| Merge partial results into a global state | |
+| Deduplicate findings across concurrent batches | |
+| Calculate final performance metrics (files/sec) | |
 
 
 ```python
-class ProgressMonitor:
-    def update(self, completed: int, total: int):
-        # UI logic for real-time bar rendering
-        pass
+export class ResultAggregator {
+  private state: Map<string, Counter>;
+
+  addBatch(results: AnalysisResult[]): void {
+    results.forEach(res => this.merge(res));
+  }
+
+  getFinalReport(): AnalysisSummary {
+    return {
+      totalErrors: this.total('error'),
+      filesProcessed: this.state.size
+    };
+  }
+}
 ```
 
 
@@ -157,36 +163,36 @@ No new data models are introduced unless specified in the component descriptions
 
 
 
-### Property F0b-P1: Deterministic Result Aggregation
+### Property F0b-P1: Result Consistency Invariant
 
 
 
 
-*For any set of input files T, the union of results from all parallel workers W must be equal to the results generated by a single-threaded execution S on the same set T.*
+*For any set of input files S, the union of results from N workers must equal the result of a single-threaded execution on S.*
 
-**Validates: Requirements 3**
-
-
-
-### Property F0b-P2: CPU Core Boundary Constraint
+**Validates: Requirements 2.0**
 
 
 
-
-*For any execution on a machine with N physical cores, the number of child processes spawned must not exceed N + 1 (primary process).*
-
-**Validates: Requirements 1, 2**
-
-
-
-### Property F0b-P3: Total Task Completion Invariant产
+### Property F0b-P2: Resource Bounds Invariant
 
 
 
 
-*For any task list L, the Progress Monitor must receive exactly |L| completion signals before the Orchestrator terminates.*
+*For any execution environment, the number of active worker threads T must satisfy 1 <= T <= max(1, allocated_cpu_cores).*
 
-**Validates: Requirements 4**
+**Validates: Requirements 1.0, 3.0**
+
+
+
+### Property F0b-P3: Partial Failure Tolerance
+
+
+
+
+*For any individual file F failing analysis in Worker W, the global report must include the error status for F regardless of other worker successes.*
+
+**Validates: Requirements 2.0**
 
 
 
@@ -197,9 +203,8 @@ No new data models are introduced unless specified in the component descriptions
 
 | Scenario | Handling |
 |---|---|
-| A worker process encounters an unhandled exception or crash during file analysis. | The Orchestrator captures the exception, logs the worker ID and the file being processed, and continues with remaining tasks to ensure a single file doesn't crash the entire CI run. |
-| The user issues a keyboard interrupt (SIGINT) during a large-scale parallel scan. | The Pool Adapter implements a timeout mechanism and sends a SIGTERM to all child processes, followed by a cleanup of IPC resources. |
-| Imbalanced task distribution (e.g., one huge file and 100 tiny files). | The distributor uses a 'chunking' strategy based on file size rather than just file count to prevent uneven distribution where one core works significantly longer than others. |
+| Worker thread crashes due to OOM on a specific large file | The WorkerHub catches the exit code. The specific file that caused the crash is flagged as 'failed' in the aggregator, and the worker is restarted to process the remaining queue. |
+| LLM API rate limit hit by multiple concurrent workers | The AnalysisCoordinator uses a retry logic with exponential backoff per-worker. If max retries are exceeded, the specific task is marked as 'Incomplete' in the final report summary. |
 
 
 
@@ -208,8 +213,12 @@ No new data models are introduced unless specified in the component descriptions
 
 
 
-Our testing strategy focuses on both performance scaling and data integrity across process boundaries. 
+The testing strategy focuses on high-concurrency stress tests and consistency checks. 
 
-Regression testing will involve running the existing test suite under a forced concurrency level of 1, 2, and 4 workers to ensure that the parallel infrastructure doesn't introduce race conditions in result collection. CI verification will be handled via a GitHub Action matrix that tests the linter on varying runner types (2-core vs 8-core) to verify core detection and utilization using `pytest-xdist`.
+Regression Testing: We will run existing 'Large Project' test suites in both --single-thread and --parallel modes, asserting that the JSON output files are identical.
 
-New property-based tests using 'Hypothesis' will be implemented to generate arbitrary lists of 'dummy files' with varying sizes. We will assert that for any generated project structure, the total count of detected errors in parallel mode exactly matches a reference serial run. We will use `pytest` with a 100-iteration setting for these property tests, tagged with `@pytest.mark.concurrency` to separate them from fast unit tests.
+CI Verification: Integration tests will be executed on runners with varying core counts (e.g., 2-core vs 16-core) using `npm run test:concurrency`. We will use `taskset` or Docker CPU limits to verify the hub's ability to detect and respect resource constraints.
+
+Property-Based Testing: Using `fast-check`, we will generate random sets of file analysis results and verify that the `ResultAggregator.merge()` operation is commutative and associative. This ensures that the order in which workers finish never affects the final count.
+
+Configuration: Testing will utilize the `WorkerThread` mocking library to simulate high-latency workers. We will perform 100 iterations per property test with a 'max-parallel' tag to catch race conditions in the aggregator.

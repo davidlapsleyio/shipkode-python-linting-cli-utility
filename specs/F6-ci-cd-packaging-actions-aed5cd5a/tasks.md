@@ -8,9 +8,9 @@
 
 
 
-The implementation strategy follows a 'Distribution-First' approach, where the core Python package is stabilized before being wrapped into higher-level delivery mechanisms. We first establish the pyproject.toml configuration to ensure the tool is installable and executable. This forms the foundation for the Slim Docker image, which leverages the pip-installed package to minimize layer size. Finally, the GitHub Action is built as a wrapper around the Docker image to provide a turnkey CI/CD solution.
+The implementation strategy follows an 'Infrastructure-as-Code' and 'Adapter-First' approach. We begin by defining the core packaging and structured output capabilities, as these form the foundation for all distribution channels. By establishing the pyproject.toml and JSON formatters first, we ensure that the subsequent Docker and GitHub Action layers are thin wrappers around a stable, verifiable core.
 
-The rationale for this order is dependency management: the Docker image cannot be verified without a working package, and the GitHub Action cannot function without a stable container image. This incremental build-up ensures that each layer of the delivery stack is validated against its specific correctness properties (Executability, Footprint, and Gate Enforcement) before moving to the next level of abstraction.
+The plan moves from the internal Python ecosystem (PyPI) to the containerization layer (Docker), and finally to the orchestration layer (GitHub Actions). This sequence allows us to validate correctness properties—such as exit codes and JSON schemas—at the lowest level before they are inherited by the higher-level CI components. Checkpoints are strategically placed after each distribution tier to verify image sizes and schema compliance.
 
 
 
@@ -20,118 +20,109 @@ The rationale for this order is dependency management: the Docker image cannot b
 
 
 
-- [ ] F6-T1. Python Distribution Packaging
+- [ ] F6-T1. Core Packaging & Formatter Foundation
 
-- [ ] F6-T1.1 Configure pyproject.toml and Entry Points
+- [ ] F6-T1.1 Standardize Python Package Manifest
 
-- Create/Update `pyproject.toml` using building backend (e.g., hatchling or setuptools).
+- Create `pyproject.toml` using setuptools or hatch backend.
 
-- Define `[project.scripts]` mapping `pyvisualguard = "pyvisualguard.cli:main"`.
+- Define `[project.scripts]` entry point mapping `pyvisualguard` to `pyvisualguard.cli:main`.
 
-- Explicitly list all production dependencies in `dependencies` array.
+- Specify dependencies: `click`, `pydantic`, `pyyaml`.
 
-- Configure clean build paths to exclude tests/ and docs/ from the sdist/wheel.
-
-- _Requirements: 1_
-
-
-- [ ] F6-T1.2 Verify Package Executability Property
-
-- Create a scripted verification test.
-
-- Create a fresh virtual environment.
-
-- Run `pip install .` followed by `pyvisualguard --version`.
-
-- Verify no development-only dependencies (like pytest) are installed.
+- Verification: Run `pip install .` and verify the `pyvisualguard` command is available in the PATH.
 
 - _Requirements: 1_
 
 
+- [ ] F6-T1.2 Implement JSON Structured Log Formatter
 
-- [ ] F6-T2. Phase 1 Checkpoint
+- Enhance `src/pyvisualguard/adapters/formatters.py` with a `JSONFormatter` class.
 
-- [ ] F6-T2.1 Build and Inspect Distribution Artifacts
+- Implement a `serialize()` method that converts `ScanResult` domain objects into JSON strings.
 
-- Run `python -m build` to generate .tar.gz and .whl.
+- Ensure fields like `vulnerability_id`, `severity`, and `file_path` are included.
 
-- Use `twine check` to verify metadata.
+- Verification: Run `pyvisualguard --format json` and pipe to `jq .` to validate structure.
 
-- Perform a dry-run install from the generated wheel.
-
-- _Requirements: 1_
-
+- _Requirements: 4_
 
 
-- [ ] F6-T3. CI-Ready Containerization
+- [ ] F6-T1.3 Develop Reliable Gatekeeping Exit Logic
 
-- [ ] F6-T3.1 Implement Multi-Stage Slim Dockerfile
+- Update the CLI entry point in `src/pyvisualguard/interfaces/cli.py`.
 
-- Create a multi-stage `Dockerfile`.
+- Implement logic to catch domain exceptions and return exit code 1 if `severity == 'CRITICAL'`.
 
-- Stage 1 (Builder): Install build-essential and compile necessary wheels.
+- Ensure exit code 0 for clean runs or low-severity findings.
 
-- Stage 2 (Final): Use `python:3.11-slim` or `alpine`.
+- Verification: Execute against a known vulnerable directory and assert `$?` (exit status) is 1.
 
-- Copy only the compiled wheels/installed package from Stage 1 to Stage 2.
+- _Requirements: 3_
+
+
+
+- [ ] F6-T2. Checkpoint: Core Validation
+
+- [ ] F6-T2.1 Verification: Core Distribution Checkpoint
+
+- Execute property test `Reliable Gatekeeping Exit Codes (CP1)`: Verify exit 1 on critical findings.
+
+- Execute property test `Structured Output Verifiability (CP2)`: Validate JSON output against the Pydantic schema.
+
+- Run `tox` or `pytest` to ensure distribution metadata is valid.
+
+
+
+- [ ] F6-T3. Containerization & Optimization
+
+- [ ] F6-T3.1 Develop Slim CI Docker Image
+
+- Define `Dockerfile` using `python:3.11-slim` as the base image.
+
+- Implement multi-stage build: build wheel in stage 1, install in stage 2 to minimize footprint.
+
+- Remove build-time dependencies (`gcc`, etc.) and clear `pip` cache.
 
 - Set `ENTRYPOINT ["pyvisualguard"]`.
 
 - _Requirements: 2_
 
 
-- [ ] F6-T3.2 Verify Minimal Image Footprint Property
+- [ ] F6-T3.2 Verify Docker Image Footprint
 
-- Build the image: `docker build -t pyvisualguard:latest .`.
+- Execute property test `Image Size Constraint (CP3)`.
 
-- Inspect image size using `docker images` to ensure it is < 150MB.
+- Run `docker build -t pyvisualguard:latest .`.
 
-- Run `docker run --rm pyvisualguard:latest --help` to verify execution.
-
-- Scan image for presence of 'gcc' or 'git' to ensure no leak of build tools.
-
-- _Requirements: 2_
+- Run `docker images` and verify size is < 150MB.
 
 
 
-- [ ] F6-T4. GitHub Action Integration
+- [ ] F6-T4. GitHub Actions Integration
 
-- [ ] F6-T4.1 Define GitHub Action Metadata and Interface
+- [ ] F6-T4.1 Create GitHub Action Wrapper
 
 - Create `action.yml` in the repository root.
 
-- Define inputs: `path`, `fail-on-critical`, `output-format`.
+- Map inputs (path, format, threshold) to CLI arguments.
 
-- Configure the action to run via `docker` using the image built in Phase 3.
+- Use `docker` execution type referencing the Slim CI image.
 
-- Map the GitHub workspace to the container volume.
-
-- _Requirements: 3_
-
-
-- [ ] F6-T4.2 Verify Quality Gate Enforcement Property
-
-- Create a test repository/workflow that invokes the local action.
-
-- Scenario A: Scan a codebase with a known critical vulnerability and `fail-on-critical: true`.
-
-- Scenario B: Scan the same codebase with `fail-on-critical: false`.
-
-- Verify exit code is 1 for Scenario A and 0 for Scenario B.
+- Map GitHub workspace to the container filesystem.
 
 - _Requirements: 3_
 
 
+- [ ] F6-T4.2 Verify Action Integration Gatekeeping
 
-- [ ] F6-T5. Final Checkpoint
+- Create `.github/workflows/test-action.yml`.
 
-- [ ] F6-T5.1 End-to-End Orchestration Test
+- Configure it to run on a local 'fixtures' directory containing known vulnerabilities.
 
-- Execute the full CI pipeline including package build, docker push, and action test.
+- Assert that the workflow fails when critical issues are found and passes otherwise.
 
-- Confirm all artifacts (PyPI wheel, Docker image, GH Action) are synchronized in versioning.
-
-- _Requirements: 1, 2, 3_
+- _Requirements: 3_
 
 
 
@@ -141,11 +132,11 @@ The rationale for this order is dependency management: the Docker image cannot b
 
 
 
-- Tasks marked with (*) are optional based on specific runner environment constraints.
+- Tasks marked with (*) are optional based on specific CI provider needs but recommended for completeness.
 
-- Traceability is maintained by mapping every sub-task to a specific Requirement ID (e.g., E4) and Property ID.
+- Traceability: Sub-tasks explicitly reference requirements (e.g., F6-R1) and properties (e.g., CP1) to ensure every design goal is accounted for.
 
-- The 'split-first' strategy is applied by isolating the packaging logic into pyproject.toml before containerization.
+- Ordering Constraint: The JSON formatter must be implemented before the GitHub Action to ensure the action can provide structured feedback to the GH UI.
 
-- Backward compatibility is guaranteed by maintaining the CLI entry point signature across all distribution formats.
+- Compatibility: The pyproject.toml configuration ensures backward compatibility with older pip versions via build-system requirements.
 
